@@ -1,10 +1,10 @@
 pub static NUM_CELLS: usize = 12;
 
-#[derive(Default)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct BMS {
-    slave_volts: [u16; NUM_CELLS],
+    pub cell_volts: [u16; NUM_CELLS],
     index_cell: usize,
-    tot_volt: u32,
+    tot_volt: u16,
     max_volt: u16,
     min_volt: u16,
     avg_volt: u16,
@@ -12,9 +12,9 @@ pub struct BMS {
 }
 
 impl BMS {
-    pub async fn new() -> Self {
+    pub fn new() -> Self {
         BMS {
-            slave_volts: [0; NUM_CELLS],
+            cell_volts: [0; NUM_CELLS],
             max_volt: 0,
             min_volt: 0,
             avg_volt: 0,
@@ -24,21 +24,41 @@ impl BMS {
         }
     }
 
-    pub async fn get_next_slave_volt(&mut self) -> u16 {
-        let volt: u16 = self.slave_volts[self.index_cell];
+    pub fn update_cell(&mut self, i: usize, value: u16) {
+        self.cell_volts[i] = value;
+        self.update();
+    }
+
+    fn update(&mut self){
+        self.tot_volt = 0;
+        self.max_volt = 0;
+        self.min_volt = u16::MAX;
+        for _i in 0..11 {
+            let x = self.get_next_cell_volt();
+            self.tot_volt = self.tot_volt.wrapping_add(x);
+            self.max_volt = if x > self.max_volt {x} else {self.max_volt};
+            self.min_volt = if x < self.min_volt {x} else {self.min_volt};
+
+        }
+        self.avg_volt = self.tot_volt()%12;
+
+    }
+
+    fn get_next_cell_volt(&mut self) -> u16 {
+        let volt: u16 = self.cell_volts[self.index_cell];
         self.index_cell += 1;
         volt
     }
 
-    pub async fn avg_volt(&self) -> u16 {
+    pub fn avg_volt(&self) -> u16 {
         self.avg_volt
     }
 
-    pub async fn tot_volt(&self) -> u32 {
+    pub fn tot_volt(&self) -> u16 {
         self.tot_volt
     }
 
-    pub async fn min_volt(&self) -> u16 {
+    pub fn min_volt(&self) -> u16 {
         self.min_volt
     }
 
@@ -46,7 +66,7 @@ impl BMS {
         self.max_volt
     }
 
-    pub async fn temp(&self) -> u16 {
+    pub fn temp(&self) -> u16 {
         self.temp
     }
 }

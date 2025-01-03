@@ -3,73 +3,90 @@
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_stm32::{gpio::{Input, Pull}, Peripherals};
-// use types::BMS;
+use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 mod types;
 mod can_management;
 mod ltc_management;
 
-use types::BMS;
-use can_management::{CanController, CanError, CanFrame};
-// use ltc_management::SpiDevice;
+use types::{CanMsg, Voltages, BMS};
+use can_management::{CanController, can_operation};
+use ltc_management::SpiDevice;
 
+static BMS: StaticCell<Mutex<CriticalSectionRawMutex, BMS>> = StaticCell::new();
+static SDC: StaticCell<Mutex<CriticalSectionRawMutex, Output>> = StaticCell::new();
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let mut p = embassy_stm32::init(Default::default());
+
+    let sdc = Output::new(p.PA2, Level::Low, Speed::High);
+    let sdc_mutex = Mutex::new(sdc);
+    let sdc = StaticCell::init(&SDC, sdc_mutex);
 
     let rx_pin = Input::new(&mut p.PA11, Pull::Up);
     core::mem::forget(rx_pin);
-
-    let mut can = setup_can(&mut p).await;
-    let mut bms = setup_bms().await;
-
     
-
+    let bms = setup_bms();
+    let bms_mutex = Mutex::new(bms);
+    let bms = StaticCell::init(&BMS, bms_mutex);
+    
+    spawner.spawn(check_sdc(bms, sdc)).unwrap();
+    
+    let _spi = SpiDevice::new(p.SPI1, p.PA5, p.PA7, p.PA6, p.PA4).await;
+    let mut can = CanController::new_can2(p.CAN2, p.PB12, p.PB13, 500_000).await;
+    
     let mut i: u8 = 0;
-    
     loop {
-
-        let frame = CanFrame::new(25, &[i]);
-
-        match can.write(&frame).await {
-            Ok(_) => {
-                info!("Message sent! {}", &frame.id());
-            }
-
-            Err(CanError::Timeout) => {
-                info!("Timeout Can connection");
-            }
-
-            Err(_) => {
-                info!("Can write error");
-            }
+        let bms_data = bms.lock().await;
+        can_operation(&bms_data, &mut can).await;
+        drop(bms_data);
+        
+        match can.read().await {
+            Ok(frame) => info!("Out: {}", frame.byte(0)),
+            Err(_) => info!("No messages"),
         }
-
-        let ex_frame = can.read().await;
-
-        match ex_frame {
-            Ok(_) => {
-                info!("Out: {}", ex_frame.unwrap().byte(0));
-            }
-
-            Err(_) => {
-                info!("No messages");
-            }
-        }
-
         i = i.wrapping_add(1);
+        embassy_time::Timer::after_millis(10).await;
     }
 }
 
-async fn setup_can(p: &mut Peripherals) -> CanController<'_>{
-    let can = CanController::new(p, 500_000).await;
-    can
-}
-
-async fn setup_bms() -> BMS{
-    let bms = BMS::new().await;
+fn setup_bms() -> BMS{
+    let bms = BMS::new();
     bms
 }
+
+#[embassy_executor::task]
+async fn check_sdc(
+        bms: &'static Mutex<CriticalSectionRawMutex, BMS>, 
+        sdc: &'static Mutex<CriticalSectionRawMutex, Output<'static>>
+    ){
+    loop {
+        let bms_data = bms.lock().await;
+        let mut sdc_close = true;
+        
+        for cell in &bms_data.cell_volts {
+            if cell < &Voltages::MinVoltage.as_raw() || cell > &Voltages::MaxVoltage.as_raw(){
+                sdc_close = false;
+                break;
+            }
+        }
+        drop(bms_data);
+
+        let mut sdc_data = sdc.lock().await;
+        if sdc_close {
+            sdc_data.set_high();
+        } else {
+            sdc_data.set_low();
+        }
+        drop(sdc_data);
+
+        embassy_time::Timer::after_millis(100).await;
+    }
+}
+
+

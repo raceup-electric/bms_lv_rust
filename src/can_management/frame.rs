@@ -50,15 +50,19 @@ impl CanFrame {
         self.frame
     }
 
-    pub fn bytes(self) -> [u8; 8] {
+    pub fn _bytes(&self) -> [u8; 8] {
         self.data
     }
 
-    pub fn byte(self, index: usize) -> u8 {
+    pub fn byte(&self, index: usize) -> u8 {
         self.data[index]
     }
 
-    pub fn id(self) -> u16 {
+    pub fn id(&self) -> u16 {
         self.id
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
     }
 }

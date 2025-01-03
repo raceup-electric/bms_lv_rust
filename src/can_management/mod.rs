@@ -1,100 +1,74 @@
 pub mod frame;
-
+pub mod can_controller;
+pub use can_controller::CanError;
+use crate::CanMsg;
+use crate::BMS;
+use defmt::info;
 pub use frame::CanFrame;
-
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::can::filter::Mask32;
-use embassy_stm32::can::{
-    Can, Fifo, Rx0InterruptHandler, Rx1InterruptHandler, SceInterruptHandler, TxInterruptHandler,
-};
-
-use embassy_stm32::peripherals::CAN1;
-use embassy_time::Duration;
-
-bind_interrupts!(struct Irqs {
-    CAN1_RX0 => Rx0InterruptHandler<CAN1>;
-    CAN1_RX1 => Rx1InterruptHandler<CAN1>;
-    CAN1_SCE => SceInterruptHandler<CAN1>;
-    CAN1_TX => TxInterruptHandler<CAN1>;
-});
+pub use can_controller::CanController;
 
 
-#[derive(Debug)]
-pub enum CanError {
-    NoItem,
-    Timeout,
-    WriteError,
+#[macro_export]
+macro_rules! get_byte {
+    ($value:expr, $byte_num:expr) => {
+        (($value >> ($byte_num * 8)) & 0xFF) as u8
+    };
+    
+    ($array:expr, $byte_num:expr, slice) => {
+        $array.get($byte_num).copied().unwrap_or(0)
+    };
 }
 
-pub struct CanController<'a> {
-    can: Can<'a>,
-    tx_frame: Option<CanFrame>
-}
+pub async fn can_operation(bms: &BMS, can: &mut CanController<'_>) {
+    let can_first: [u8; 8] = [
+        get_byte!(bms.min_volt(), 0),
+        get_byte!(bms.min_volt(), 1),
+        get_byte!(bms.max_volt(), 0),
+        get_byte!(bms.max_volt(), 1),
+        get_byte!(bms.avg_volt(), 0),
+        get_byte!(bms.avg_volt(), 1),
+        get_byte!(bms.tot_volt(), 0),
+        get_byte!(bms.tot_volt(), 1)
+    ];
 
-impl<'a> CanController<'a>{
-    pub async fn new(p: &'a mut embassy_stm32::Peripherals, baudrate: u32) -> Self {
-        let mut controller = CanController {
-            can: Can::new(&mut p.CAN1, &mut p.PA11, &mut p.PA12, Irqs),
-            tx_frame: None
-        };
+    let frame_send = CanFrame::new(CanMsg::VoltageId.as_raw(), &can_first);
+    match can.write(&frame_send).await {
+        Ok(_) => {
+            info!("Message sent! {}", &frame_send.id());
+            for i in 0..frame_send.len() {
+                info!("Byte: {}: {}", i, &frame_send.byte(i));
+            }
+        }
 
-        controller.can.modify_filters().enable_bank(0, Fifo::Fifo0, Mask32::accept_all());
+        Err(CanError::Timeout) => {
+            info!("Timeout Can connection");
+        }
 
-        controller.can.modify_config()
-            .set_loopback(true) // Receive own frames
-            .set_silent(true)
-            .set_bitrate(baudrate);
-
-        controller.can.enable().await;
-        controller
+        Err(_) => {
+            info!("Can write error");
+        }
     }
 
-    pub async fn write(&mut self, frame: &CanFrame) -> Result<(), CanError> {
-        let mut attempts: u8 = 0;
+    let can_second = [
+        get_byte!(bms.temp(), 0),
+        get_byte!(bms.temp(), 1)
+    ];
 
-        while (self.tx_frame.is_some()) && (attempts < 5) {
-            embassy_time::Timer::after(Duration::from_millis(10)).await;
-            attempts = attempts.wrapping_add(1);
-        }
-
-        if attempts >= 5 {
-            return Err(CanError::Timeout)
-        }
-
-        let new_frame = frame.clone();
-
-        self.tx_frame = Some(new_frame);
-
-        attempts = 0;
-
-        while attempts < 4 {
-            if let Some(ref tx_frame) = self.tx_frame {
-                match self.can.try_write(&tx_frame.frame()) {
-                    Ok(_) => {
-                        self.tx_frame = None;
-                        return Ok(())
-                    }
-                    Err(_) => {
-                        attempts = attempts.wrapping_add(1);
-                    }
-                }
+    let frame_send = CanFrame::new(CanMsg::TemperatureId.as_raw(), &can_second);
+    match can.write(&frame_send).await {
+        Ok(_) => {
+            info!("Message sent! {}", &frame_send.id());
+            for i in 0..frame_send.len() {
+                info!("Byte: {}: {}", i, &frame_send.byte(i));
             }
         }
-        self.tx_frame = None;
-        Err(CanError::WriteError)
-    } 
 
-    pub async fn read(&mut self) -> Result<CanFrame, CanError> {
-        let envelope = self.can.try_read();
-        match envelope {
-            Ok(_) => {
-                let frame = CanFrame::from_envelope(envelope.unwrap());
-                return Ok(frame);        
-            }
+        Err(CanError::Timeout) => {
+            info!("Timeout Can connection");
+        }
 
-            Err(_) => {
-                return Err(CanError::NoItem);
-            }
+        Err(_) => {
+            info!("Can write error");
         }
     }
 }
