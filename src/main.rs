@@ -8,6 +8,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
+use core::str::from_utf8;
 
 mod types;
 mod can_management;
@@ -37,12 +38,14 @@ async fn main(spawner: Spawner) {
     
     spawner.spawn(check_sdc(bms, sdc)).unwrap();
     
-    let _spi = SpiDevice::new(p.SPI1, p.PA5, p.PA7, p.PA6, p.PA4).await;
+    let mut spi = SpiDevice::new(p.SPI1, p.PA5, p.PA7, p.PA6, p.PA4, p.DMA2_CH3, p.DMA2_CH0).await;
     let mut can = CanController::new_can2(p.CAN2, p.PB12, p.PB13, 500_000).await;
     
     let mut i: u8 = 0;
+
     loop {
-        let bms_data = bms.lock().await;
+        let mut bms_data = bms.lock().await;
+        bms_data.update_cell(3, 21000);
         can_operation(&bms_data, &mut can).await;
         drop(bms_data);
         
@@ -52,6 +55,11 @@ async fn main(spawner: Spawner) {
         }
         i = i.wrapping_add(1);
         embassy_time::Timer::after_millis(10).await;
+
+        spi.write(&[3]).await;
+        let mut buf: [u8; 128] = [0; 128];
+        spi.read(&mut buf).await;
+        info!("read via spi+dma: {}", from_utf8(&buf).unwrap());
     }
 }
 
