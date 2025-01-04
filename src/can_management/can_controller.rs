@@ -33,7 +33,8 @@ pub enum CanError {
 
 pub struct CanController<'a> {
     can: Can<'a>,
-    tx_frame: Option<CanFrame>
+    tx_frame: Option<CanFrame>,
+    is_can2: bool
 }
 
 
@@ -41,10 +42,9 @@ impl<'a> CanController<'a>{
     async fn new(mut controller: CanController<'a>, baudrate: u32) -> Self {
         controller.can.modify_config()
             .set_loopback(true) // Receive own frames
-            .set_silent(true)
             .set_bitrate(baudrate);
         
-        controller.can.modify_filters().enable_bank(0, Fifo::Fifo0, Mask32::accept_all());
+        if !controller.is_can2 {controller.can.modify_filters().enable_bank(0, Fifo::Fifo0, Mask32::accept_all());}
         controller.can.enable().await;
         controller
     }
@@ -57,16 +57,26 @@ impl<'a> CanController<'a>{
                 tx,
                 Irqs1
             ),
-            tx_frame: None
+            tx_frame: None,
+            is_can2: false
         };
         Self::new(controller, baudrate).await
     }
 
-    pub async fn new_can2(peri: CAN2, rx: PB12, tx: PB13, baudrate: u32) -> Self {
+    pub async fn new_can2(peri: CAN2, rx: PB12, tx: PB13, baudrate: u32, peri1: CAN1, rx1: PA11, tx1: PA12) -> Self {
+        let mut can1 = Can::new(peri1, rx1, tx1, Irqs1);
+ 
         let controller = CanController {
             can: Can::new(peri, rx, tx, Irqs2),
-            tx_frame: None
+            tx_frame: None,
+            is_can2: true
         };
+
+        can1.modify_filters().set_split(0).num_banks();
+        can1.modify_filters().slave_filters().enable_bank(0, Fifo::Fifo1, Mask32::accept_all());
+        can1.sleep().await;
+        drop(can1);
+
         Self::new(controller, baudrate).await        
     }
 

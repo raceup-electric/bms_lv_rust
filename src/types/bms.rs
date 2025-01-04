@@ -47,6 +47,7 @@ impl BMS {
     fn get_next_cell_volt(&mut self) -> u16 {
         let volt: u16 = self.cell_volts[self.index_cell];
         self.index_cell += 1;
+        if self.index_cell >= 12 {self.index_cell = 0};
         volt
     }
 
