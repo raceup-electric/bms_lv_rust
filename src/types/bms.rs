@@ -24,6 +24,10 @@ impl BMS {
         }
     }
 
+    pub fn update_temp(&mut self, temp: u16) {
+        self.temp = temp;
+    }
+
     pub fn update_cell(&mut self, i: usize, value: u16) {
         self.cell_volts[i] = value;
         self.update();

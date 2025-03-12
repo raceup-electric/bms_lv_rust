@@ -4,15 +4,15 @@ pub use bms::BMS;
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CanMsg {
-    VoltageId = 0x54,
-    TemperatureId = 0x55
+    VoltageId = 0x57,
+    TemperatureId = 0x58
 }
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Voltages {
-    MaxVoltage,
-    MinVoltage
+    MaxVoltage = 4000,
+    MinVoltage = 2000
 }
 
 impl CanMsg {

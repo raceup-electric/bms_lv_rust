@@ -21,10 +21,10 @@ macro_rules! get_byte {
 
 pub async fn can_operation(bms: &BMS, can: &mut CanController<'_>) {
     let can_first: [u8; 8] = [
-        get_byte!(bms.min_volt(), 0),
-        get_byte!(bms.min_volt(), 1),
         get_byte!(bms.max_volt(), 0),
         get_byte!(bms.max_volt(), 1),
+        get_byte!(bms.min_volt(), 0),
+        get_byte!(bms.min_volt(), 1),
         get_byte!(bms.avg_volt(), 0),
         get_byte!(bms.avg_volt(), 1),
         get_byte!(bms.tot_volt(), 0),
@@ -50,8 +50,14 @@ pub async fn can_operation(bms: &BMS, can: &mut CanController<'_>) {
     }
 
     let can_second = [
-        get_byte!(bms.temp(), 0),
-        get_byte!(bms.temp(), 1)
+        get_byte!(bms.cell_volts[0] + bms.cell_volts[1], 0),
+        get_byte!(bms.temp(), 1),
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
     ];
 
     let frame_send = CanFrame::new(CanMsg::TemperatureId.as_raw(), &can_second);

@@ -3,11 +3,12 @@ use embassy_stm32::mode::Async;
 use embassy_stm32::spi::{BitOrder, Config, Instance, MisoPin, MosiPin, RxDma, SckPin, Spi, TxDma, MODE_3};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::Peripheral;
+
 use {defmt_rtt as _, panic_probe as _};
 
 pub struct SpiDevice<'a> {
     spi: Option<Spi<'a, Async>>,
-    cs: Output<'a>
+    pub cs: Output<'a>
 }
 
 impl<'a> SpiDevice<'a> {
@@ -18,13 +19,14 @@ impl<'a> SpiDevice<'a> {
         miso: (impl Peripheral<P = impl MisoPin<T>> + 'a), 
         cs:  (impl Peripheral<P = impl Pin> + 'a),
         tx_dma: (impl Peripheral<P = impl TxDma<T>> + 'a),
-        rx_dma: (impl Peripheral<P = impl RxDma<T>> + 'a)
+        rx_dma: (impl Peripheral<P = impl RxDma<T>> + 'a),
     ) -> Self {
 
         let mut spi_config = Config::default();
         spi_config.mode = MODE_3;
         spi_config.bit_order = BitOrder::MsbFirst;
         spi_config.frequency = Hertz(1_000_000);
+        
         
         let spi = Spi::new(
             peri,
@@ -36,10 +38,12 @@ impl<'a> SpiDevice<'a> {
             spi_config
         );
         
-        SpiDevice { 
+        let spi = SpiDevice { 
             spi: Some(spi),
             cs: Output::new(cs, Level::High, Speed::VeryHigh)
-        }
+        };
+
+        spi
     }
 
     pub async fn write(&mut self, data: &[u8]) {
@@ -50,7 +54,7 @@ impl<'a> SpiDevice<'a> {
     
             self.cs.set_high();
         } else {
-            panic!("SPI instance not initialized");
+            return;
         }
     }
     
@@ -63,7 +67,26 @@ impl<'a> SpiDevice<'a> {
     
             self.cs.set_high();
         } else {
-            panic!("SPI instance not initialized");
+            return;
+        }
+    }
+
+    pub async fn _transfer(&mut self, tx_buffer: &[u8], rx_buffer: &mut [u8]) -> Result<(), ()> {
+        // Ensure spi is initialized before using
+        if let Some(spi) = self.spi.as_mut() {
+            self.cs.set_low();
+            match spi.transfer(rx_buffer, tx_buffer).await {
+                Ok(_) => {
+                    self.cs.set_high();
+                    return Ok(())
+                }
+                Err(_) => {
+                    self.cs.set_high();
+                    return Err(());
+                }
+            }
+        } else {
+            return Err(());
         }
     }
 }
