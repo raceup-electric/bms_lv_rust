@@ -38,7 +38,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(check_sdc(bms, sdc)).unwrap();
     let can = CanController::new_can2(p.CAN2, p.PB12, p.PB13, 500_000, p.CAN1, p.PA11, p.PA12).await;
     let can_mutex = Mutex::new(can);
-    let can: &mut Mutex<CriticalSectionRawMutex, CanController<'_>> = StaticCell::init(&CAN, can_mutex);
+    let can = StaticCell::init(&CAN, can_mutex);
     spawner.spawn(send_can(bms, can)).unwrap();
 
     let spi: SpiDevice<'static> = SpiDevice::new(p.SPI1, p.PA5, p.PA7, p.PA6, p.PA4, p.DMA2_CH3, p.DMA2_CH0).await;
@@ -58,7 +58,7 @@ async fn main(spawner: Spawner) {
 
     loop {
         let mut bms_data = bms.lock().await;
-        bms_data.update_cell(3, 21000);
+        // bms_data.update_cell(3, 21000);
         drop(bms_data);
         
         embassy_time::Timer::after_millis(10).await;
