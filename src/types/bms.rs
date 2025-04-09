@@ -1,10 +1,11 @@
+use libm::roundf;
+
 pub static NUM_CELLS: usize = 12;
 
 #[derive(Default, Debug, Copy, Clone)]
 pub struct BMS {
     pub cell_volts: [u16; NUM_CELLS],
-    index_cell: usize,
-    tot_volt: u16,
+    tot_volt: u32,
     max_volt: u16,
     min_volt: u16,
     avg_volt: u16,
@@ -20,7 +21,6 @@ impl BMS {
             avg_volt: 0,
             tot_volt: 0,
             temp: 0,
-            index_cell: 0
         }
     }
 
@@ -37,29 +37,28 @@ impl BMS {
         self.tot_volt = 0;
         self.max_volt = 0;
         self.min_volt = u16::MAX;
-        for _i in 0..11 {
-            let x = self.get_next_cell_volt();
-            self.tot_volt = self.tot_volt.wrapping_add(x);
-            self.max_volt = if x > self.max_volt {x} else {self.max_volt};
-            self.min_volt = if x < self.min_volt {x} else {self.min_volt};
+        for &volt in self.cell_volts.iter() {
+            self.tot_volt = self.tot_volt.wrapping_add(volt as u32);
+            self.max_volt = if volt > self.max_volt {volt} else {self.max_volt};
+            self.min_volt = if volt < self.min_volt {volt} else {self.min_volt};
 
         }
-        self.avg_volt = self.tot_volt()%12;
+        let v_float = (self.tot_volt as f32) /12.0f32;
+        let rounded: u16 = if v_float >= 0.0 {
+            roundf(v_float).max(0.0) as u16
+        } else {
+            0
+        };
 
-    }
+        self.avg_volt = rounded;
 
-    fn get_next_cell_volt(&mut self) -> u16 {
-        let volt: u16 = self.cell_volts[self.index_cell];
-        self.index_cell += 1;
-        if self.index_cell >= 12 {self.index_cell = 0};
-        volt
     }
 
     pub fn avg_volt(&self) -> u16 {
         self.avg_volt
     }
 
-    pub fn tot_volt(&self) -> u16 {
+    pub fn tot_volt(&self) -> u32 {
         self.tot_volt
     }
 
@@ -73,5 +72,9 @@ impl BMS {
 
     pub fn temp(&self) -> u16 {
         self.temp
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::new();
     }
 }

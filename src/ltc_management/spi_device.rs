@@ -50,28 +50,31 @@ impl<'a> SpiDevice<'a> {
         if let Some(spi) = self.spi.as_mut() {
             self.cs.set_low();
     
-            spi.write(data).await.unwrap();
-    
+            if let Err(e) = spi.write(data).await {
+                defmt::error!("SPI write failed: {:?}", e);
+            }
             self.cs.set_high();
         } else {
             return;
         }
     }
     
-    pub async fn read(&mut self, buffer: &mut [u8]) {
+    pub async fn _read(&mut self, buffer: &mut [u8]) {
         // Ensure spi is initialized before using
         if let Some(spi) = self.spi.as_mut() {
             self.cs.set_low();
     
-            spi.read(buffer).await.unwrap();
-    
+            if let Err(e) = spi.read(buffer).await {
+                defmt::error!("SPI read failed: {:?}", e);
+            }
+
             self.cs.set_high();
         } else {
             return;
         }
     }
 
-    pub async fn _transfer(&mut self, tx_buffer: &[u8], rx_buffer: &mut [u8]) -> Result<(), ()> {
+    pub async fn transfer(&mut self, tx_buffer: &[u8], rx_buffer: &mut [u8]) -> Result<(), ()> {
         // Ensure spi is initialized before using
         if let Some(spi) = self.spi.as_mut() {
             self.cs.set_low();

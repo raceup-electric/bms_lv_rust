@@ -12,28 +12,43 @@ const RDCVC: [u8; 2] = [0x00, 0x08];  // Read Cell Voltage Register Group C (cel
 const RDCVD: [u8; 2] = [0x00, 0x0A];  // Read Cell Voltage Register Group D (cells 10-12)
 const RDAUXA: [u8; 2] = [0x00, 0x0C]; // Read Auxiliary Register Group A (for temperature)
 const ADCV: [u8; 2] = [0x02, 0x60];   // Start Cell Voltage ADC Conversion and Poll Status
+const ADAX: [u8; 2] = [0x04, 0x60];   // Start Temperature Conversion and Poll Status
+
+// Thresholds and balancing parameters (example values – adjust as required)
+const UV_THRESHOLD: u16 = 3000; // in millivolts
+const OV_THRESHOLD: u16 = 4200; // in millivolts
+const BAL_EPSILON: u16 = 50;    // allowable voltage difference for balancing
 
 // Configuration
 const _NUM_CELLS: usize = 12;
 const REFON: u8 = 0x04;      // Reference Powered Up
 const ADCOPT: u8 = 0x01;     // ADC Mode option bit
 // GPIO configuration bits if needed
-const GPIO1: u8 = 0x00;      // GPIO1 as digital input
-const GPIO2: u8 = 0x00;      // GPIO2 as digital input
-const GPIO3: u8 = 0x00;      // GPIO3 as digital input
-const GPIO4: u8 = 0x00;      // GPIO4 as digital input
-const GPIO5: u8 = 0x00;      // GPIO5 as digital input
+const GPIO1: u8 = 0x01;      // GPIO1 as digital input
+const GPIO2: u8 = 0x01;      // GPIO2 as digital input
+const GPIO3: u8 = 0x01;      // GPIO3 as digital input
+const GPIO4: u8 = 0x01;      // GPIO4 as digital input
+const GPIO5: u8 = 0x01;      // GPIO5 as digital input
+const GPIOS: u8 = 0x0 | (GPIO1 << 3) | (GPIO2 << 4) | (GPIO3 << 5) | (GPIO4 << 6) | (GPIO5 << 7);
+
+#[derive(PartialEq)]
+pub enum MODE {
+    NORMAL,
+    BALANCING,
+    SLEEP
+}
 
 // LTC6811 Management structure
 pub struct LTC6811 {
     spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
     bms: &'static Mutex<CriticalSectionRawMutex, BMS>,
     config: [u8; 6],  // Configuration registers
+    mode: MODE
 }
 
 impl LTC6811 {
     pub async fn new(spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
-                     bms: &'static Mutex<CriticalSectionRawMutex, BMS>
+                     bms: &'static Mutex<CriticalSectionRawMutex, BMS>,
 ) -> Self {
         // Initialize with default configuration
         // CFGR0: ADCOPT | GPIO[5:1]
@@ -43,7 +58,7 @@ impl LTC6811 {
         // CFGR4: Cell discharge timer and under-voltage comparison enable
         // CFGR5: Cell discharge timer and over-voltage comparison enable
         let config = [
-            ADCOPT | GPIO5 | GPIO4 | GPIO3 | GPIO2 | GPIO1,
+            0x00,
             0x00,
             REFON,
             0x00,
@@ -55,6 +70,7 @@ impl LTC6811 {
             spi,
             bms,
             config,
+            mode: MODE::NORMAL
         }
     }
 
@@ -74,6 +90,10 @@ impl LTC6811 {
         [(crc >> 8) as u8, crc as u8]
     }
 
+    pub fn set_mode(&mut self, mode: MODE) {
+        self.mode = mode;
+    }
+
     // Prepare command with PEC
     fn prepare_command(&self, cmd: [u8; 2]) -> [u8; 4] {
         let mut command = [0u8; 4];
@@ -85,10 +105,45 @@ impl LTC6811 {
         command
     }
 
+    pub async fn init_cfg(&mut self) -> Result<(), ()> {
+        let uv_val = (UV_THRESHOLD /16) -1;
+        let ov_val = OV_THRESHOLD /16;
+
+        self.config[0] = GPIOS | ADCOPT;
+        self.config[1] = (uv_val & 0xFF) as u8;
+        self.config[2] = (((ov_val & 0xF) << 4) | ((uv_val & 0xF00) >> 8)) as u8;
+        self.config[3] = (ov_val >> 4) as u8;
+        {
+            let bms_data = self.bms.lock().await;
+            // Assume bms_data.min_volt and bms_data.max_volt are set when valid.
+            if self.mode == MODE::BALANCING && bms_data.min_volt() != 0 && bms_data.max_volt() != 0 {
+                let mut discharge_bitmap: u16 = 0;
+                // Iterate over all 12 cells. Here we assume that bms_data.cell_volts is an array of 12 u16.
+                for i in 0.._NUM_CELLS {
+                    // If the cell voltage exceeds the minimum by more than BAL_EPSILON, enable discharge.
+                    if (bms_data.cell_volts[i] as i16 - bms_data.min_volt() as i16) > BAL_EPSILON as i16 {
+                        discharge_bitmap |= 1 << i;
+                    }
+                }
+                // In the C code the lower 8 bits go into config[4] and the upper nibble (4 bits) goes into config[5].
+                self.config[4] = (discharge_bitmap & 0xFF) as u8;
+                self.config[5] = ((discharge_bitmap >> 8) & 0x0F) as u8;
+            } else {
+                // Not balancing (or no measurements available): clear discharge bits.
+                self.config[4] = 0x00;
+                self.config[5] = 0x00;
+            }
+        }
+
+        // Write the configuration to the chip.
+        self.write_config().await?;
+        Ok(())
+    }
+
     // Initialize the LTC6811
     pub async fn init(&mut self) -> Result<(), ()> {
         // Write configuration registers
-        self.write_config().await?;
+        self.init_cfg().await?;
         
         self.wakeup().await;
         // Delay to allow LTC6811 to stabilize
@@ -99,7 +154,7 @@ impl LTC6811 {
         let cmd = self.prepare_command(RDCFGA);
         let mut spi_data = self.spi.lock().await;
         spi_data.write(&cmd).await;
-        spi_data.read(&mut read_config).await;
+        self.transfer_ltc(&mut spi_data, &mut read_config).await;
         drop(spi_data);
         
         // Config verification could be done here if needed
@@ -111,11 +166,19 @@ impl LTC6811 {
         let mut spi_data = self.spi.lock().await;
         spi_data.cs.set_low();
 
-        for _ in 0..220 {
+        for _ in 0..50 {
             spi_data.write(&[0xff]).await;
             embassy_time::Timer::after_millis(5).await;
         }
 
+        spi_data.cs.set_high();
+        drop(spi_data);
+    }
+
+    pub async fn wakeup_idle(&mut self) {
+        let mut spi_data = self.spi.lock().await;
+        spi_data.cs.set_low();
+        spi_data.write(&[0xFF]).await;
         spi_data.cs.set_high();
         drop(spi_data);
     }
@@ -131,11 +194,11 @@ impl LTC6811 {
         let pec = Self::calculate_pec(&self.config);
         data[6] = pec[0];
         data[7] = pec[1];
-        
+
+        self.wakeup_idle().await;
         let mut spi_data = self.spi.lock().await;
         // Send command
         spi_data.write(&cmd).await;
-        
         // Send data
         spi_data.write(&data).await;
         
@@ -146,15 +209,28 @@ impl LTC6811 {
     // Start cell voltage conversion
     pub async fn start_cell_conversion(&mut self) -> Result<(), ()> {
         let cmd = self.prepare_command(ADCV);
+
+        self.wakeup_idle().await;
         let mut spi_data = self.spi.lock().await;
         // Send command
         spi_data.write(&cmd).await;
         
         drop(spi_data);
         // Wait for conversion to complete (typical conversion time ~2ms)
-        Timer::after(Duration::from_millis(4)).await;
+        Timer::after(Duration::from_millis(6)).await;
         
         Ok(())
+    }
+    
+    // Helper function according to tommy's code
+    pub async fn transfer_ltc(&self, spi_data: &mut SpiDevice<'static>, rx_buffer: &mut [u8]) {
+        for byte in rx_buffer {
+            match spi_data.transfer(&[0xFF], &mut [*byte]).await {
+                Ok(_) => continue,
+
+                Err(_) => defmt::info!("Error Reading SPI")
+            }
+        }
     }
     
     // Read cell voltage registers and update BMS
@@ -168,25 +244,25 @@ impl LTC6811 {
         let cmd_a = self.prepare_command(RDCVA);
         let mut data_a = [0u8; 8]; // 6 data bytes + 2 PEC bytes        
         spi_data.write(&cmd_a).await;
-        spi_data.read(&mut data_a).await;
+        self.transfer_ltc(&mut spi_data, &mut data_a).await;
         
         // Read voltage registers (cells 4-6)
         let cmd_b = self.prepare_command(RDCVB);
         let mut data_b = [0u8; 8];
         spi_data.write(&cmd_b).await;
-        spi_data.read(&mut data_b).await;
+        self.transfer_ltc(&mut spi_data, &mut data_b).await;
         
         // Read voltage registers (cells 7-9)
         let cmd_c = self.prepare_command(RDCVC);
         let mut data_c = [0u8; 8];
         spi_data.write(&cmd_c).await;
-        spi_data.read(&mut data_c).await;
+        self.transfer_ltc(&mut spi_data, &mut data_c).await;
         
         // Read voltage registers (cells 10-12)
         let cmd_d = self.prepare_command(RDCVD);
         let mut data_d = [0u8; 8];
         spi_data.write(&cmd_d).await;
-        spi_data.read(&mut data_d).await;
+        self.transfer_ltc(&mut spi_data, &mut data_d).await;
         drop(spi_data);
         
         // Process and update BMS with cell voltages
@@ -224,24 +300,34 @@ impl LTC6811 {
         Ok(())
     }
     
-    // Read temperature sensor (assuming connected to GPIO1/AUX1)
-    pub async fn read_temperature(&mut self) -> Result<(), ()> {
-        // Start GPIO ADC conversion (command would depend on GPIO configuration)
-        // For this example, assuming we use ADAX command to measure auxiliary inputs
-        let adax = [0x04, 0x60]; // Start GPIO ADC conversion
-        let cmd = self.prepare_command(adax);
-
+    pub async fn start_temperature_conversion(&mut self) -> Result<(), ()> {
+        let cmd = self.prepare_command(ADAX);
+        
+        self.wakeup_idle().await;
         let mut spi_data = self.spi.lock().await;
+        // Send command
         spi_data.write(&cmd).await;
         
-        // Wait for conversion to complete
-        Timer::after(Duration::from_millis(3)).await;
+        drop(spi_data);
+        // Wait for conversion to complete (typical conversion time ~2ms)
+        Timer::after(Duration::from_millis(6)).await;
         
+        Ok(())
+    }
+
+    // Read temperature sensor (assuming connected to GPIO1/AUX1)
+    pub async fn read_temperature(&mut self) -> Result<(), ()> {
+        self.start_temperature_conversion().await?;
+
+        // Wait for conversion to complete
+        Timer::after(Duration::from_millis(6)).await;
+        
+        let mut spi_data = self.spi.lock().await;
         // Read auxiliary registers
         let cmd_aux = self.prepare_command(RDAUXA);
         let mut data_aux = [0u8; 8];
         spi_data.write(&cmd_aux).await;
-        spi_data.read(&mut data_aux).await;
+        self.transfer_ltc(&mut spi_data, &mut data_aux).await;
         
         // Extract temperature value (assuming connected to GPIO1)
         let temp = ((data_aux[1] as u16) << 8) | (data_aux[0] as u16);
@@ -249,9 +335,6 @@ impl LTC6811 {
         let mut bms_data: embassy_sync::mutex::MutexGuard<'_, CriticalSectionRawMutex, BMS> = self.bms.lock().await;
         bms_data.update_temp(temp);
         drop(bms_data);
-        // Update BMS with temperature
-        // Since our BMS struct doesn't have a set_temp method, we might need to add one
-        // For now, just return the raw value
         
         Ok(())
     }
@@ -259,13 +342,17 @@ impl LTC6811 {
 
     // Periodic update - call this regularly to keep BMS data fresh
     pub async fn update(&mut self) -> Result<(), ()> {
+        let mut bms_data = self.bms.lock().await;
+        bms_data.reset();
+        drop(bms_data);
         // Read all cell voltages
-        self.read_cell_voltages().await?;
+        match self.read_cell_voltages().await {
+            Ok(_) => {},
+            Err(_) => return Err(())
+        }
         
         // Read temperature
-        self.read_temperature().await?;
-        
-        Ok(())
+        self.read_temperature().await
     }
     
     // Balance cells if needed

@@ -27,7 +27,7 @@ pub async fn can_operation(bms: &BMS, can: &mut CanController<'_>) {
             get_byte!(bms.cell_volts[TEMP], 1),
             0, 0,0,0,0,0
         ];
-        TEMP.wrapping_add(1);
+        TEMP = TEMP.wrapping_add(1);
         TEMP = TEMP %12;
     let frame_send = CanFrame::new(CanMsg::VoltageId.as_raw(), &can_first);
     match can.write(&frame_send).await {

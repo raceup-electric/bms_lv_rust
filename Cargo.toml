@@ -25,7 +25,8 @@ embedded-io-async = { version = "^0.6.1" }
 panic-probe = { version = "^0.3", features = ["print-defmt"] }
 futures-util = { version = "^0.3.30", default-features = false }
 heapless = { version = "^0.8", default-features = false }
-ltc681x = "0.6.1"
+
+libm = "0.2"
 
 [profile.release]
 debug = 2
