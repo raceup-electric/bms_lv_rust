@@ -34,8 +34,7 @@ const GPIOS: u8 = 0x0 | (GPIO1 << 3) | (GPIO2 << 4) | (GPIO3 << 5) | (GPIO4 << 6
 #[derive(PartialEq)]
 pub enum MODE {
     NORMAL,
-    BALANCING,
-    SLEEP
+    BALANCING
 }
 
 // LTC6811 Management structure

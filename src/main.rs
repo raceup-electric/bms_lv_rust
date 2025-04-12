@@ -78,7 +78,7 @@ async fn send_can(
         can_operation(&bms_data, &mut can_data).await;
         drop(can_data);
         drop(bms_data);
-        embassy_time::Timer::after_millis(1000).await;
+        embassy_time::Timer::after_millis(200).await;
     }
 }
 
@@ -101,9 +101,9 @@ async fn read_can(
             Err(_) => {
                 info!("No messages");
                 if (embassy_time::Instant::now().as_millis() - time_now) > 10000 {
-                    let mut ltc_data = ltc.lock().await;
-                    ltc_data.set_mode(MODE::SLEEP);
-                    drop(ltc_data);
+                    // let mut ltc_data = ltc.lock().await;
+                    // ltc_data.set_mode(MODE::SLEEP);
+                    // drop(ltc_data);
                 }
             }
         }
