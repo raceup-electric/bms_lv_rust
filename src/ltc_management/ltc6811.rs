@@ -2,6 +2,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use crate::types::bms::BMS;
 use super::spi_device::SpiDevice;
+use crate::info;
 
 // LTC6811 Commands
 const WRCFGA: [u8; 2] = [0x00, 0x01]; // Write Configuration Register Group A
@@ -15,14 +16,15 @@ const ADCV: [u8; 2] = [0x02, 0x60];   // Start Cell Voltage ADC Conversion and P
 const ADAX: [u8; 2] = [0x04, 0x60];   // Start Temperature Conversion and Poll Status
 
 // Thresholds and balancing parameters (example values – adjust as required)
-const UV_THRESHOLD: u16 = 3000; // in millivolts
-const OV_THRESHOLD: u16 = 4200; // in millivolts
+const UV_THRESHOLD: u16 = 1; // in millivolts
+const OV_THRESHOLD: u16 = 40200; // in millivolts
 const BAL_EPSILON: u16 = 50;    // allowable voltage difference for balancing
 
 // Configuration
 const _NUM_CELLS: usize = 12;
 const REFON: u8 = 0x04;      // Reference Powered Up
 const ADCOPT: u8 = 0x01;     // ADC Mode option bit
+
 // GPIO configuration bits if needed
 const GPIO1: u8 = 0x01;      // GPIO1 as digital input
 const GPIO2: u8 = 0x01;      // GPIO2 as digital input
@@ -37,7 +39,12 @@ pub enum MODE {
     BALANCING
 }
 
-// LTC6811 Management structure
+/// Struct representing the LTC6811 Battery Management System (BMS) controller.
+///
+/// This struct provides methods for interacting with the LTC6811 chip, including configuring
+/// the chip, reading cell voltages, reading temperature, and balancing cells. The LTC6811 is
+/// used in multi-cell battery management systems for monitoring cell voltages, temperature, 
+/// and balancing cells as needed.
 pub struct LTC6811 {
     spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
     bms: &'static Mutex<CriticalSectionRawMutex, BMS>,
@@ -46,6 +53,16 @@ pub struct LTC6811 {
 }
 
 impl LTC6811 {
+    /// Creates a new instance of `LTC6811` with the given SPI interface and BMS data.
+    ///
+    /// # Arguments
+    ///
+    /// * `spi` - The SPI interface for communication with the LTC6811.
+    /// * `bms` - A reference to the BMS data structure for cell and temperature data.
+    ///
+    /// # Returns
+    ///
+    /// A new `LTC6811` instance initialized with default configuration.
     pub async fn new(spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
                      bms: &'static Mutex<CriticalSectionRawMutex, BMS>,
 ) -> Self {
@@ -73,7 +90,18 @@ impl LTC6811 {
         }
     }
 
-    // Calculate PEC (CRC) for LTC6811 communication
+    /// Calculates the PEC (CRC) for a given command.
+    ///
+    /// The PEC (Protection Element Check) is a CRC-16 checksum used for data integrity
+    /// verification in communication with the LTC6811.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The data to calculate the PEC for.
+    ///
+    /// # Returns
+    ///
+    /// A two-byte array representing the calculated PEC.
     fn calculate_pec(data: &[u8]) -> [u8; 2] {
         let mut crc = 0x0010; // Initial CRC value
         for byte in data {
@@ -89,11 +117,44 @@ impl LTC6811 {
         [(crc >> 8) as u8, crc as u8]
     }
 
+    /// Verifies the PEC (CRC) of received data.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The data to verify the PEC for.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the PEC is valid, `false` otherwise.
+    fn verify_pec(&self, data: &[u8]) -> bool {
+        if data.len() < 3 {
+            // Almeno un byte di dati e 2 byte PEC
+            return false;
+        }
+        let data_len = data.len() - 2;
+        let expected_pec = Self::calculate_pec(&data[0..data_len]);
+        // Confronto byte-per-byte con i 2 byte PEC ricevuti:
+        expected_pec[0] == data[data_len] && expected_pec[1] == data[data_len + 1]
+    }
+
+    /// Sets the operating mode of the LTC6811.
+    ///
+    /// # Arguments
+    ///
+    /// * `mode` - The mode to set (either `NORMAL` or `BALANCING`).
     pub fn set_mode(&mut self, mode: MODE) {
         self.mode = mode;
     }
 
-    // Prepare command with PEC
+    /// Prepares a command with PEC (CRC) for transmission.
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` - The command to prepare.
+    ///
+    /// # Returns
+    ///
+    /// A 4-byte array containing the command and its corresponding PEC.
     fn prepare_command(&self, cmd: [u8; 2]) -> [u8; 4] {
         let mut command = [0u8; 4];
         command[0] = cmd[0];
@@ -104,6 +165,14 @@ impl LTC6811 {
         command
     }
 
+    /// Initializes the LTC6811's configuration.
+    ///
+    /// This method sets up the configuration registers for the LTC6811, including the
+    /// under-voltage and over-voltage thresholds, and configures the discharge options.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success (`Ok`) or failure (`Err`).
     pub async fn init_cfg(&mut self) -> Result<(), ()> {
         let uv_val = (UV_THRESHOLD /16) -1;
         let ov_val = OV_THRESHOLD /16;
@@ -139,14 +208,21 @@ impl LTC6811 {
         Ok(())
     }
 
-    // Initialize the LTC6811
+    /// Initializes the LTC6811.
+    ///
+    /// This method writes the configuration to the LTC6811, performs a wake-up, and verifies
+    /// that the configuration was successfully written.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success (`Ok`) or failure (`Err`).
     pub async fn init(&mut self) -> Result<(), ()> {
         // Write configuration registers
         self.init_cfg().await?;
         
         self.wakeup().await;
         // Delay to allow LTC6811 to stabilize
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(Duration::from_millis(20)).await;
         
         // Verify configuration
         let mut read_config = [0u8; 8]; // 6 config bytes + 2 PEC bytes
@@ -156,18 +232,21 @@ impl LTC6811 {
         self.transfer_ltc(&mut spi_data, &mut read_config).await;
         drop(spi_data);
         
-        // Config verification could be done here if needed
-        
+        if self.config != read_config[0..6] {
+            info!("Errors Spi")
+        }
+
+
         Ok(())
     }
 
+    /// Wakes up the LTC6811 by sending 220 clock pulses.
     pub async fn wakeup(&mut self) {
         let mut spi_data = self.spi.lock().await;
         spi_data.cs.set_low();
 
-        for _ in 0..50 {
+        for _ in 0..220 {
             spi_data.write(&[0xff]).await;
-            embassy_time::Timer::after_millis(5).await;
         }
 
         spi_data.cs.set_high();
@@ -177,6 +256,7 @@ impl LTC6811 {
     pub async fn wakeup_idle(&mut self) {
         let mut spi_data = self.spi.lock().await;
         spi_data.cs.set_low();
+        spi_data.write(&[0xFF]).await;
         spi_data.write(&[0xFF]).await;
         spi_data.cs.set_high();
         drop(spi_data);
@@ -200,7 +280,7 @@ impl LTC6811 {
         spi_data.write(&cmd).await;
         // Send data
         spi_data.write(&data).await;
-        
+
         drop(spi_data);
         Ok(())
     }
@@ -227,7 +307,7 @@ impl LTC6811 {
             match spi_data.transfer(&[0xFF], &mut [*byte]).await {
                 Ok(_) => continue,
 
-                Err(_) => defmt::info!("Error Reading SPI")
+                Err(_) => info!("Error Reading SPI")
             }
         }
     }
@@ -244,7 +324,8 @@ impl LTC6811 {
         let mut data_a = [0u8; 8]; // 6 data bytes + 2 PEC bytes        
         spi_data.write(&cmd_a).await;
         self.transfer_ltc(&mut spi_data, &mut data_a).await;
-        
+        data_a = if self.verify_pec(&data_a) {data_a} else {[255; 8]};
+
         // Read voltage registers (cells 4-6)
         let cmd_b = self.prepare_command(RDCVB);
         let mut data_b = [0u8; 8];

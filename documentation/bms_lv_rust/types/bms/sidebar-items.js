@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"static":["NUM_CELLS"],"struct":["BMS"]};

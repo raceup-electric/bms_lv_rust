@@ -6,7 +6,7 @@ use embassy_stm32::can::{
     Can, Fifo, Rx0InterruptHandler, Rx1InterruptHandler, SceInterruptHandler, TxInterruptHandler
 };
 
-use embassy_stm32::peripherals::{CAN1, CAN2, PA11, PA12, PB12, PB13};
+use embassy_stm32::peripherals::{CAN1, CAN2, PA11, PA12, PB12, PB13, PB8, PB9};
 use embassy_time::Duration;
 
 bind_interrupts!(struct Irqs1 {
@@ -65,7 +65,7 @@ impl<'a> CanController<'a>{
         Self::new(controller, baudrate).await
     }
 
-    pub async fn new_can2(peri: CAN2, rx: PB12, tx: PB13, baudrate: u32, peri1: CAN1, rx1: PA11, tx1: PA12) -> Self {
+    pub async fn new_can2(peri: CAN2, rx: PB12, tx: PB13, baudrate: u32, peri1: CAN1, rx1: PB8, tx1: PB9) -> Self {
         let mut can1 = Can::new(peri1, rx1, tx1, Irqs1);
  
         let controller = CanController {

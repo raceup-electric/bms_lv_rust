@@ -4,7 +4,7 @@ use crate::CanMsg;
 use crate::BMS;
 pub use can_controller::CanController;
 pub use can_controller::CanError;
-use defmt::info;
+use crate::info;
 pub use frame::CanFrame;
 
 #[macro_export]
