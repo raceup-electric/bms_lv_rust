@@ -14,7 +14,7 @@ use {defmt_rtt as _, panic_probe as _};
 /// Internal modules
 mod types;
 mod can_management;
-pub mod usb_serial;
+mod usb_serial;
 mod ltc_management;
 
 use types::{CanMsg, BMS, TEMPERATURES, VOLTAGES};
@@ -170,7 +170,7 @@ async fn check_err_check(
         let bms_data = bms.lock().await;
         let mut err_check_close = true;
 
-        for cell in &bms_data.cell_volts {
+        for cell in &bms_data.cell_volts() {
             if cell < &VOLTAGES::MINVOLTAGE.as_raw() || cell > &VOLTAGES::MAXVOLTAGE.as_raw() {
                 err_check_close = false;
                 break;

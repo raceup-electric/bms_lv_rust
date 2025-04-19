@@ -22,8 +22,8 @@ pub async fn can_operation(bms: &BMS, can: &mut CanController<'_>) {
     static mut TEMP: usize = 0 as usize;
     unsafe {
         let can_first: [u8; 8] = [
-            get_byte!(bms.cell_volts[TEMP], 0),
-            get_byte!(bms.cell_volts[TEMP], 1),
+            get_byte!(bms.cell_volts()[TEMP], 0),
+            get_byte!(bms.cell_volts()[TEMP], 1),
             0,
             0,
             0,

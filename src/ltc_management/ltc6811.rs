@@ -189,7 +189,7 @@ impl LTC6811 {
                 // Iterate over all 12 cells. Here we assume that bms_data.cell_volts is an array of 12 u16.
                 for i in 0.._NUM_CELLS {
                     // If the cell voltage exceeds the minimum by more than BAL_EPSILON, enable discharge.
-                    if (bms_data.cell_volts[i] as i16 - bms_data.min_volt() as i16) > BAL_EPSILON as i16 {
+                    if (bms_data.cell_volts()[i] as i16 - bms_data.min_volt() as i16) > BAL_EPSILON as i16 {
                         discharge_bitmap |= 1 << i;
                     }
                 }
@@ -445,7 +445,7 @@ impl LTC6811 {
         
         // For each cell, check if it needs balancing
         for i in 0.._NUM_CELLS {
-            let cell_volt = bms_data.cell_volts[i];
+            let cell_volt = bms_data.cell_volts()[i];
             
             // If this cell's voltage is above threshold compared to minimum,
             // enable its discharge circuit

@@ -13,7 +13,7 @@ pub static NUM_CELLS: usize = 12;
 #[derive(Default, Debug, Copy, Clone)]
 pub struct BMS {
     /// Array holding the voltage values for each cell in the system.
-    pub cell_volts: [u16; NUM_CELLS],
+    cell_volts: [u16; NUM_CELLS],
     /// Total voltage of the cells.
     tot_volt: u32,
     /// Maximum voltage across all cells.
@@ -129,6 +129,10 @@ impl BMS {
     /// The temperature as a `u16`.
     pub fn temp(&self) -> u16 {
         self.temp
+    }
+
+    pub fn cell_volts(&self) -> [u16; NUM_CELLS] {
+        self.cell_volts
     }
 
     /// Resets the BMS, clearing all stored voltage and temperature values.
