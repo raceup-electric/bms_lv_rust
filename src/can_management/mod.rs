@@ -19,17 +19,21 @@ macro_rules! get_byte {
 }
 
 pub async fn can_operation(bms: &BMS, can: &mut CanController<'_>) {
+    if bms.max_volt() == 0 {
+        return;
+    }
+    let tot_v = (bms.tot_volt()/100) as u16;
     static mut TEMP: usize = 0 as usize;
     unsafe {
         let can_first: [u8; 8] = [
-            get_byte!(bms.cell_volts[TEMP], 0),
-            get_byte!(bms.cell_volts[TEMP], 1),
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
+            get_byte!(bms.max_volt(), 0),
+            get_byte!(bms.max_volt(), 1),
+            get_byte!(bms.min_volt(), 0),
+            get_byte!(bms.min_volt(), 1),
+            get_byte!(bms.avg_volt(), 0),
+            get_byte!(bms.avg_volt(), 1),
+            get_byte!(tot_v, 0),
+            get_byte!(tot_v, 1),
         ];
         TEMP = TEMP.wrapping_add(1);
         if TEMP == (12 as usize) {
@@ -53,15 +57,18 @@ pub async fn can_operation(bms: &BMS, can: &mut CanController<'_>) {
             }
         }
     }
+    if bms.max_temp() == 0 {
+        return;
+    }
     let can_second = [
-        get_byte!(bms.temp(), 0),
-        get_byte!(bms.temp(), 1),
+        get_byte!(bms.max_temp(), 0),
+        get_byte!(bms.max_temp(), 1),
+        get_byte!(bms.min_temp(), 0),
+        get_byte!(bms.min_temp(), 1),
+        get_byte!(bms.avg_temp(), 0),
+        get_byte!(bms.avg_temp(), 1),
         0,
-        0,
-        0,
-        0,
-        0,
-        0,
+        0
     ];
 
     let frame_send = CanFrame::new(CanMsg::TemperatureId.as_raw(), &can_second);

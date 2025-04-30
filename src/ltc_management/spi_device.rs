@@ -74,7 +74,7 @@ impl<'a> SpiDevice<'a> {
         }
     }
 
-    pub async fn transfer(&mut self, tx_buffer: &[u8], rx_buffer: &mut [u8]) -> Result<(), ()> {
+    pub async fn _transfer(&mut self, tx_buffer: &[u8], rx_buffer: &mut [u8]) -> Result<(), ()> {
         // Ensure spi is initialized before using
         if let Some(spi) = self.spi.as_mut() {
             self.cs.set_low();
@@ -91,5 +91,29 @@ impl<'a> SpiDevice<'a> {
         } else {
             return Err(());
         }
+    }
+
+    pub async fn cmd_read(
+        &mut self,
+        cmd: &[u8;4],
+        resp: &mut [u8;8],
+    ) -> Result<(), ()> {
+        // take the inner Spi rather than using write()/transfer()
+        let spi = self.spi.as_mut().unwrap();
+
+        // 1) CS low once
+        self.cs.set_low();
+
+        // 2) send the 4-byte command
+        spi.write(cmd).await.map_err(|_| ())?;
+
+        // 3) clock out 8 dummy bytes and capture the response
+        let tx = [0xFFu8; 8];
+        spi.transfer(resp, &tx).await.map_err(|_| ())?;
+
+        // 4) CS high
+        self.cs.set_high();
+
+        Ok(())
     }
 }

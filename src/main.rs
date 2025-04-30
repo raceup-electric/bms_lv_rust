@@ -24,7 +24,7 @@ static SPI: StaticCell<Mutex<CriticalSectionRawMutex, SpiDevice>> = StaticCell::
 static LTC: StaticCell<Mutex<CriticalSectionRawMutex, LTC6811>> = StaticCell::new();
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
+async fn main(spawner: Spawner) -> !{
     let p = embassy_stm32::init(Default::default());
 
     let err_check = Output::new(p.PA2, Level::Low, Speed::High);
@@ -78,7 +78,7 @@ async fn send_can(
         can_operation(&bms_data, &mut can_data).await;
         drop(can_data);
         drop(bms_data);
-        embassy_time::Timer::after_millis(200).await;
+        embassy_time::Timer::after_millis(700).await;
     }
 }
 
