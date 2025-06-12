@@ -117,6 +117,9 @@ async fn ltc_function(
     ltc: &'static Mutex<CriticalSectionRawMutex, LTC6811>,
     err_check: &'static Mutex<CriticalSectionRawMutex, Output<'static>>
 ) {
+    let mut err_check_close = true;
+    let mut time_now = embassy_time::Instant::now().as_millis();
+
     loop {
         let mut ltc_data = ltc.lock().await;
         
@@ -145,14 +148,18 @@ async fn ltc_function(
             let _ = ltc_data.balance_cells().await;
             embassy_time::Timer::after_millis(2000).await;
         } else {
-            embassy_time::Timer::after_millis(80).await;
+            embassy_time::Timer::after_millis(1).await;
         }
 
         let bms_data = bms.lock().await;
-        let mut err_check_close = true;
         
         if &bms_data.min_volt() < &VOLTAGES::MINVOLTAGE.as_raw() || &bms_data.max_volt() > &VOLTAGES::MAXVOLTAGE.as_raw(){
-            err_check_close = false;
+            if embassy_time::Instant::now().as_millis() - time_now > 450 {
+                err_check_close = false;
+            }
+        } else {
+            err_check_close = true;
+            time_now = embassy_time::Instant::now().as_millis();
         }
         drop(bms_data);
 
