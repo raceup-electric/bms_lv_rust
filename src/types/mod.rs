@@ -1,11 +1,11 @@
 pub mod bms;
-pub use bms::BMS;
+pub use bms::SLAVEBMS;
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CanMsg {
-    VoltageId = 0x57,
-    TemperatureId = 0x58
+    VoltageId = 0x54,
+    TemperatureId = 0x55
 }
 
 impl CanMsg {

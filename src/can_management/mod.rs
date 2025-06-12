@@ -1,7 +1,7 @@
 pub mod can_controller;
 pub mod frame;
+use crate::types::SLAVEBMS;
 use crate::CanMsg;
-use crate::BMS;
 pub use can_controller::CanController;
 pub use can_controller::CanError;
 use defmt::info;
@@ -18,10 +18,7 @@ macro_rules! get_byte {
     };
 }
 
-pub async fn can_operation(bms: &BMS, can: &mut CanController<'_>) {
-    if bms.max_volt() == 0 {
-        return;
-    }
+pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) {
     let tot_v = (bms.tot_volt()/100) as u16;
     static mut TEMP: usize = 0 as usize;
     unsafe {
@@ -57,9 +54,7 @@ pub async fn can_operation(bms: &BMS, can: &mut CanController<'_>) {
             }
         }
     }
-    if bms.max_temp() == 0 {
-        return;
-    }
+
     let can_second = [
         get_byte!(bms.max_temp(), 0),
         get_byte!(bms.max_temp(), 1),

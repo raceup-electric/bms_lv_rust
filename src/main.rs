@@ -13,11 +13,11 @@ mod types;
 mod can_management;
 mod ltc_management;
 
-use types::{CanMsg, VOLTAGES, BMS};
+use types::{CanMsg, VOLTAGES, SLAVEBMS};
 use can_management::{can_operation, CanController};
 use ltc_management::{ltc6811::MODE, SpiDevice, LTC6811};
 
-static BMS: StaticCell<Mutex<CriticalSectionRawMutex, BMS>> = StaticCell::new();
+static BMS: StaticCell<Mutex<CriticalSectionRawMutex, SLAVEBMS>> = StaticCell::new();
 static ERR_CHECK: StaticCell<Mutex<CriticalSectionRawMutex, Output>> = StaticCell::new();
 static CAN: StaticCell<Mutex<CriticalSectionRawMutex, CanController>> = StaticCell::new();
 static SPI: StaticCell<Mutex<CriticalSectionRawMutex, SpiDevice>> = StaticCell::new();
@@ -27,7 +27,7 @@ static LTC: StaticCell<Mutex<CriticalSectionRawMutex, LTC6811>> = StaticCell::ne
 async fn main(spawner: Spawner) -> !{
     let p = embassy_stm32::init(Default::default());
 
-    let err_check = Output::new(p.PA2, Level::Low, Speed::High);
+    let err_check = Output::new(p.PA2, Level::High, Speed::High);
     let err_check_mutex = Mutex::new(err_check);
     let err_check = StaticCell::init(&ERR_CHECK, err_check_mutex);
 
@@ -35,7 +35,6 @@ async fn main(spawner: Spawner) -> !{
     let bms_mutex = Mutex::new(bms);
     let bms = StaticCell::init(&BMS, bms_mutex);
 
-    spawner.spawn(check_err_check(bms, err_check)).unwrap();
     let can = CanController::new_can2(p.CAN2, p.PB12, p.PB13, 500_000, p.CAN1, p.PA11, p.PA12).await;
     let can_mutex = Mutex::new(can);
     let can = StaticCell::init(&CAN, can_mutex);
@@ -53,7 +52,7 @@ async fn main(spawner: Spawner) -> !{
 
     let ltc_mutex = Mutex::new(ltc);
     let ltc = StaticCell::init(&LTC, ltc_mutex);
-    spawner.spawn(ltc_function(bms, ltc)).unwrap();
+    spawner.spawn(ltc_function(bms, ltc, err_check)).unwrap();
 
     spawner.spawn(read_can(ltc, can)).unwrap();
 
@@ -62,14 +61,14 @@ async fn main(spawner: Spawner) -> !{
     }
 }
 
-fn setup_bms() -> BMS{
-    let bms = BMS::new();
+fn setup_bms() -> SLAVEBMS{
+    let bms = SLAVEBMS::new();
     bms
 }
 
 #[embassy_executor::task]
 async fn send_can(
-    bms: &'static Mutex<CriticalSectionRawMutex, BMS>, 
+    bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>, 
     can: &'static Mutex<CriticalSectionRawMutex, CanController<'static>>,
 ){
     loop {
@@ -95,7 +94,7 @@ async fn read_can(
                 info!("Out: {}", frame.byte(0));
                 time_now = embassy_time::Instant::now().as_millis();
                 let mut ltc_data = ltc.lock().await;
-                ltc_data.set_mode(MODE::NORMAL);
+                ltc_data.set_mode(MODE::NORMAL).await;
                 drop(ltc_data);
             }
             Err(_) => {
@@ -108,47 +107,19 @@ async fn read_can(
             }
         }
         drop(can_data);
-        embassy_time::Timer::after_millis(10).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn check_err_check(
-        bms: &'static Mutex<CriticalSectionRawMutex, BMS>, 
-        err_check: &'static Mutex<CriticalSectionRawMutex, Output<'static>>
-){
-    loop {
-        let bms_data = bms.lock().await;
-        let mut err_check_close = true;
-        
-        for cell in &bms_data.cell_volts {
-            if cell < &VOLTAGES::MINVOLTAGE.as_raw() || cell > &VOLTAGES::MAXVOLTAGE.as_raw(){
-                err_check_close = false;
-                break;
-            }
-        }
-        drop(bms_data);
-
-        let mut err_check_data = err_check.lock().await;
-        if err_check_close {
-            err_check_data.set_high();
-        } else {
-            err_check_data.set_low();
-        }
-        drop(err_check_data);
-
-        embassy_time::Timer::after_millis(100).await;
+        embassy_time::Timer::after_millis(5).await;
     }
 }
 
 #[embassy_executor::task]
 async fn ltc_function(
-    bms: &'static Mutex<CriticalSectionRawMutex, BMS>, 
+    bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>, 
     ltc: &'static Mutex<CriticalSectionRawMutex, LTC6811>,
+    err_check: &'static Mutex<CriticalSectionRawMutex, Output<'static>>
 ) {
     loop {
         let mut ltc_data = ltc.lock().await;
-
+        
         match ltc_data.update().await {
             Ok(_) => {
                 // Access BMS data
@@ -165,9 +136,33 @@ async fn ltc_function(
                 
                 drop(bms_data);
             },
-            Err(_) => defmt::error!("Failed to update battery data"),
+            Err(_) => {
+                defmt::error!("Failed to update battery data");
+            }
         }
-        embassy_time::Timer::after_millis(100).await;
+        
+        if ltc_data.get_mode() == MODE::BALANCING {
+            let _ = ltc_data.balance_cells().await;
+            embassy_time::Timer::after_millis(2000).await;
+        } else {
+            embassy_time::Timer::after_millis(80).await;
+        }
+
+        let bms_data = bms.lock().await;
+        let mut err_check_close = true;
+        
+        if &bms_data.min_volt() < &VOLTAGES::MINVOLTAGE.as_raw() || &bms_data.max_volt() > &VOLTAGES::MAXVOLTAGE.as_raw(){
+            err_check_close = false;
+        }
+        drop(bms_data);
+
+        let mut err_check_data = err_check.lock().await;
+        if err_check_close {
+            err_check_data.set_low();
+        } else {
+            err_check_data.set_high();
+        }
+        drop(err_check_data);
     }
 }  
 
