@@ -13,7 +13,7 @@ mod types;
 mod can_management;
 mod ltc_management;
 
-use types::{CanMsg, VOLTAGES, SLAVEBMS};
+use types::{CanMsg, SLAVEBMS};
 use can_management::{can_operation, CanController};
 use ltc_management::{ltc6811::MODE, SpiDevice, LTC6811};
 
@@ -117,9 +117,6 @@ async fn ltc_function(
     ltc: &'static Mutex<CriticalSectionRawMutex, LTC6811>,
     err_check: &'static Mutex<CriticalSectionRawMutex, Output<'static>>
 ) {
-    let mut err_check_close = true;
-    let mut time_now = embassy_time::Instant::now().as_millis();
-
     loop {
         let mut ltc_data = ltc.lock().await;
         
@@ -150,25 +147,9 @@ async fn ltc_function(
         } else {
             embassy_time::Timer::after_millis(1).await;
         }
-
-        let bms_data = bms.lock().await;
         
-        if &bms_data.min_volt() < &VOLTAGES::MINVOLTAGE.as_raw() || &bms_data.max_volt() > &VOLTAGES::MAXVOLTAGE.as_raw(){
-            if embassy_time::Instant::now().as_millis() - time_now > 450 {
-                err_check_close = false;
-            }
-        } else {
-            err_check_close = true;
-            time_now = embassy_time::Instant::now().as_millis();
-        }
-        drop(bms_data);
-
         let mut err_check_data = err_check.lock().await;
-        if err_check_close {
-            err_check_data.set_low();
-        } else {
-            err_check_data.set_high();
-        }
+        err_check_data.set_low();
         drop(err_check_data);
     }
 }  
