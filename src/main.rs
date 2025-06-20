@@ -157,7 +157,6 @@ async fn ltc_function(
             }
         }
         
-
         let bms_data = bms.lock().await;
         
         if &bms_data.min_volt() < &VOLTAGES::MINVOLTAGE.as_raw() || &bms_data.max_volt() > &VOLTAGES::MAXVOLTAGE.as_raw(){
