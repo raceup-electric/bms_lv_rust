@@ -5,7 +5,8 @@ pub use bms::SLAVEBMS;
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CanMsg {
     VoltageId = 0x54,
-    TemperatureId = 0x55
+    TemperatureId = 0x55,
+    Balancing = 0x1A4
 }
 
 impl CanMsg {
@@ -30,7 +31,7 @@ impl VOLTAGES {
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum _TEMPERATURES {
-    _MAXTEMP = 60,
+    _MAXTEMP = 58,
     _MINTEMP = 10
 }
 

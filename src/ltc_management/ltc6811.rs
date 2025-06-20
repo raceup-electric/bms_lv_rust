@@ -142,8 +142,9 @@ impl LTC6811 {
     pub async fn set_mode(&mut self, mode: MODE) {
         if self.mode != mode {
             self.mode = mode;
-            let _ = self.init_cfg().await;
         }
+        
+        let _ = self.init_cfg().await;
     }
 
     pub fn get_mode(&self) -> MODE {
@@ -414,6 +415,12 @@ impl LTC6811 {
     // Periodic update - call this regularly to keep BMS data fresh
     pub async fn update(&mut self) -> Result<(), ()> {
         // Read all cell voltages
+        if self.mode != MODE::NORMAL {
+            self.set_mode(MODE::NORMAL).await;
+        }
+
+        let _ = self.init_cfg().await;
+
         match self.read_cell_voltages().await {
             Ok(_) => {}
             Err(_) => return Err(()),
@@ -506,6 +513,8 @@ impl LTC6811 {
 
     // Balance cells if needed
     pub async fn balance_cells(&mut self) -> Result<(), ()> {
+        self.set_mode(MODE::BALANCING).await;
+
         let bms_data: embassy_sync::mutex::MutexGuard<'_, CriticalSectionRawMutex, SLAVEBMS> =
             self.bms.lock().await;
 
@@ -541,6 +550,7 @@ impl LTC6811 {
 
         // Write the updated configuration to enable/disable balancing
         self.write_config().await?;
+
 
         Ok(())
     }

@@ -91,11 +91,18 @@ async fn read_can(
         let mut can_data = can.lock().await;
         match can_data.read().await {
             Ok(frame) => {
-                info!("Out: {}", frame.byte(0));
+                if frame.id() == CanMsg::Balancing.as_raw() {
+                    if frame.byte(0) == 0x1 {
+                        let mut ltc_data = ltc.lock().await;
+                        ltc_data.set_mode(MODE::BALANCING).await;
+                        drop(ltc_data);
+                    } else {
+                        let mut ltc_data = ltc.lock().await;
+                        ltc_data.set_mode(MODE::NORMAL).await;
+                        drop(ltc_data);
+                    }
+                }
                 time_now = embassy_time::Instant::now().as_millis();
-                let mut ltc_data = ltc.lock().await;
-                ltc_data.set_mode(MODE::NORMAL).await;
-                drop(ltc_data);
             }
             Err(_) => {
                 info!("No messages");
@@ -107,7 +114,6 @@ async fn read_can(
             }
         }
         drop(can_data);
-        embassy_time::Timer::after_millis(5).await;
     }
 }
 
@@ -120,6 +126,13 @@ async fn ltc_function(
     loop {
         let mut ltc_data = ltc.lock().await;
         
+        if ltc_data.get_mode() == MODE::BALANCING {
+            let _ = ltc_data.balance_cells().await;
+            embassy_time::Timer::after_millis(2000).await;
+        } else {
+            embassy_time::Timer::after_millis(5).await;
+        }
+
         match ltc_data.update().await {
             Ok(_) => {
                 // Access BMS data
@@ -141,12 +154,6 @@ async fn ltc_function(
             }
         }
         
-        if ltc_data.get_mode() == MODE::BALANCING {
-            let _ = ltc_data.balance_cells().await;
-            embassy_time::Timer::after_millis(2000).await;
-        } else {
-            embassy_time::Timer::after_millis(80).await;
-        }
 
         let bms_data = bms.lock().await;
         let mut err_check_close = true;
