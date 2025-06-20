@@ -41,8 +41,10 @@ pub struct CanController<'a> {
 impl<'a> CanController<'a>{
     async fn new(mut controller: CanController<'a>, baudrate: u32) -> Self {
         controller.can.modify_config()
-            .set_loopback(true) // Receive own frames
-            .set_bitrate(baudrate);
+            .set_loopback(false)             // Disable loopback mode
+            .set_silent(false)               // Enable active participation in the bus
+            .set_automatic_retransmit(false) // Disable automatic retransmission
+            .set_bitrate(baudrate); 
         
         if !controller.is_can2 {controller.can.modify_filters().enable_bank(0, Fifo::Fifo0, Mask32::accept_all());}
         controller.can.enable().await;
