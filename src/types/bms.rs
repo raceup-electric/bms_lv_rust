@@ -141,14 +141,6 @@ impl SLAVEBMS {
     }
 
     pub fn update(&mut self) {
-        self.tot_volt = 0;
-        self.min_volt = 0;
-        self.max_volt = 0;
-        self.avg_volt = 0;
-        self.avg_temp = 0;
-        self.max_temp = 0;
-        self.min_temp = 0;
-        
         let mut tot_volt: u64 = 0;
         let mut max_volt: u64 = 0;
         let mut min_volt: u64 = 0;
@@ -261,8 +253,4 @@ impl SLAVEBMS {
     pub fn cell_volts(&self, i: usize) -> u16 {
         self.bms_history[self.index].cell_volts[i]
     }
-
-    // pub fn temperatures(&self, i: usize) -> u16 {
-    //     self.bms_history[self.index].temperatures[i]
-    // }
 }

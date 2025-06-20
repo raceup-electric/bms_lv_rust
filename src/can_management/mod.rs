@@ -61,9 +61,7 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) {
         get_byte!(bms.min_temp(), 0),
         get_byte!(bms.min_temp(), 1),
         get_byte!(bms.avg_temp(), 0),
-        get_byte!(bms.avg_temp(), 1),
-        0,
-        0
+        get_byte!(bms.avg_temp(), 1)
     ];
 
     let frame_send = CanFrame::new(CanMsg::TemperatureId.as_raw(), &can_second);
