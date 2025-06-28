@@ -1,6 +1,6 @@
 use super::spi_device::SpiDevice;
 use crate::types::{bms::SLAVEBMS, VOLTAGES};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 
 use libm::{logf, roundf};
@@ -96,16 +96,16 @@ pub enum MODE {
 
 // LTC6811 Management structure
 pub struct LTC6811 {
-    spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
-    bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>,
+    spi: &'static Mutex<NoopRawMutex, SpiDevice<'static>>,
+    bms: &'static Mutex<NoopRawMutex, SLAVEBMS>,
     config: [u8; 6], // Configuration registers
     mode: MODE,
 }
 
 impl LTC6811 {
     pub async fn new(
-        spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
-        bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>,
+        spi: &'static Mutex<NoopRawMutex, SpiDevice<'static>>,
+        bms: &'static Mutex<NoopRawMutex, SLAVEBMS>,
     ) -> Self {
         // Initialize with default configuration
         // CFGR0: ADCOPT | GPIO[5:1]
@@ -140,9 +140,7 @@ impl LTC6811 {
     }
 
     pub async fn set_mode(&mut self, mode: MODE) {
-        if self.mode != mode {
-            self.mode = mode;
-        }
+        self.mode = mode;
         
         let _ = self.init_cfg().await;
     }
@@ -515,7 +513,7 @@ impl LTC6811 {
     pub async fn balance_cells(&mut self) -> Result<(), ()> {
         self.set_mode(MODE::BALANCING).await;
 
-        let bms_data: embassy_sync::mutex::MutexGuard<'_, CriticalSectionRawMutex, SLAVEBMS> =
+        let bms_data: embassy_sync::mutex::MutexGuard<'_, NoopRawMutex, SLAVEBMS> =
             self.bms.lock().await;
 
         // Get current cell data

@@ -4,7 +4,7 @@
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -17,17 +17,17 @@ use types::{CanMsg, VOLTAGES, SLAVEBMS};
 use can_management::{can_operation, CanController};
 use ltc_management::{ltc6811::MODE, SpiDevice, LTC6811};
 
-static BMS: StaticCell<Mutex<CriticalSectionRawMutex, SLAVEBMS>> = StaticCell::new();
-static ERR_CHECK: StaticCell<Mutex<CriticalSectionRawMutex, Output>> = StaticCell::new();
-static CAN: StaticCell<Mutex<CriticalSectionRawMutex, CanController>> = StaticCell::new();
-static SPI: StaticCell<Mutex<CriticalSectionRawMutex, SpiDevice>> = StaticCell::new();
-static LTC: StaticCell<Mutex<CriticalSectionRawMutex, LTC6811>> = StaticCell::new();
+static BMS: StaticCell<Mutex<NoopRawMutex, SLAVEBMS>> = StaticCell::new();
+static ERR_CHECK: StaticCell<Mutex<NoopRawMutex, Output>> = StaticCell::new();
+static CAN: StaticCell<Mutex<NoopRawMutex, CanController>> = StaticCell::new();
+static SPI: StaticCell<Mutex<NoopRawMutex, SpiDevice>> = StaticCell::new();
+static LTC: StaticCell<Mutex<NoopRawMutex, LTC6811>> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> !{
     let p = embassy_stm32::init(Default::default());
 
-    let err_check = Output::new(p.PA2, Level::High, Speed::High);
+    let err_check = Output::new(p.PA2, Level::Low, Speed::High);
     let err_check_mutex = Mutex::new(err_check);
     let err_check = StaticCell::init(&ERR_CHECK, err_check_mutex);
 
@@ -68,8 +68,8 @@ fn setup_bms() -> SLAVEBMS{
 
 #[embassy_executor::task]
 async fn send_can(
-    bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>, 
-    can: &'static Mutex<CriticalSectionRawMutex, CanController<'static>>,
+    bms: &'static Mutex<NoopRawMutex, SLAVEBMS>, 
+    can: &'static Mutex<NoopRawMutex, CanController<'static>>,
 ){
     loop {
         let bms_data = bms.lock().await;
@@ -77,25 +77,29 @@ async fn send_can(
         can_operation(&bms_data, &mut can_data).await;
         drop(can_data);
         drop(bms_data);
-        embassy_time::Timer::after_millis(700).await;
+        embassy_time::Timer::after_millis(100).await;
     }
 }
 
 #[embassy_executor::task]
 async fn read_can(
-    ltc: &'static Mutex<CriticalSectionRawMutex, LTC6811>,
-    can: &'static Mutex<CriticalSectionRawMutex, CanController<'static>>
+    ltc: &'static Mutex<NoopRawMutex, LTC6811>,
+    can: &'static Mutex<NoopRawMutex, CanController<'static>>
 ){
     let mut time_now = embassy_time::Instant::now().as_millis();
     loop {
         let mut can_data = can.lock().await;
         match can_data.read().await {
             Ok(frame) => {
-                if frame.id() == CanMsg::Balancing.as_raw() {
-                    if frame.byte(0) == 0x1 {
+                let id = frame.id();
+                let bytes = frame.bytes();
+                drop(can_data);
+                if id == CanMsg::Balancing.as_raw() {
+                    if bytes[0] == 0x1 as u8 {
                         let mut ltc_data = ltc.lock().await;
                         ltc_data.set_mode(MODE::BALANCING).await;
                         drop(ltc_data);
+
                     } else {
                         let mut ltc_data = ltc.lock().await;
                         ltc_data.set_mode(MODE::NORMAL).await;
@@ -105,6 +109,7 @@ async fn read_can(
                 time_now = embassy_time::Instant::now().as_millis();
             }
             Err(_) => {
+                drop(can_data);
                 info!("No messages");
                 if (embassy_time::Instant::now().as_millis() - time_now) > 10000 {
                     // let mut ltc_data = ltc.lock().await;
@@ -113,15 +118,15 @@ async fn read_can(
                 }
             }
         }
-        drop(can_data);
+        embassy_time::Timer::after_micros(5).await;
     }
 }
 
 #[embassy_executor::task]
 async fn ltc_function(
-    bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>, 
-    ltc: &'static Mutex<CriticalSectionRawMutex, LTC6811>,
-    err_check: &'static Mutex<CriticalSectionRawMutex, Output<'static>>
+    bms: &'static Mutex<NoopRawMutex, SLAVEBMS>, 
+    ltc: &'static Mutex<NoopRawMutex, LTC6811>,
+    err_check: &'static Mutex<NoopRawMutex, Output<'static>>
 ) {
     let mut err_check_close = true;
     let mut time_now = embassy_time::Instant::now().as_millis();
@@ -133,7 +138,7 @@ async fn ltc_function(
             let _ = ltc_data.balance_cells().await;
             embassy_time::Timer::after_millis(2000).await;
         } else {
-            embassy_time::Timer::after_millis(2).await;
+            embassy_time::Timer::after_millis(5).await;
         }
 
         match ltc_data.update().await {
@@ -171,9 +176,9 @@ async fn ltc_function(
 
         let mut err_check_data = err_check.lock().await;
         if err_check_close {
-            err_check_data.set_low();
-        } else {
             err_check_data.set_high();
+        } else {
+            err_check_data.set_low();
         }
         drop(err_check_data);
     }

@@ -50,7 +50,7 @@ impl CanFrame {
         self.frame
     }
 
-    pub fn _bytes(&self) -> [u8; 8] {
+    pub fn bytes(&self) -> [u8; 8] {
         self.data
     }
 
