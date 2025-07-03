@@ -189,21 +189,21 @@ async fn ltc_function(
 
             let frame_send = CanFrame::new(CanMsg::ErrorId.as_raw(), &can_second);
             match can_data.write(&frame_send).await {
-            Ok(_) => {
-                info!("Message sent! {}", &frame_send.id());
-                for i in 0..frame_send.len() {
-                    info!("Byte: {}: {}", i, &frame_send.byte(i));
+                Ok(_) => {
+                    info!("Message sent! {}", &frame_send.id());
+                    for i in 0..frame_send.len() {
+                        info!("Byte: {}: {}", i, &frame_send.byte(i));
+                    }
+                }
+
+                Err(CanError::Timeout) => {
+                    info!("Timeout Can connection");
+                }
+
+                Err(_) => {
+                    info!("Can write error");
                 }
             }
-
-            Err(CanError::Timeout) => {
-                info!("Timeout Can connection");
-            }
-
-            Err(_) => {
-                info!("Can write error");
-            }
-        }
         }
         drop(err_check_data);
     }
