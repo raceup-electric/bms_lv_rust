@@ -7,6 +7,8 @@ use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use static_cell::StaticCell;
+use crate::can_management::{CanError, CanFrame};
+
 use {defmt_rtt as _, panic_probe as _};
 
 mod types;
@@ -52,7 +54,7 @@ async fn main(spawner: Spawner) -> !{
 
     let ltc_mutex = Mutex::new(ltc);
     let ltc = StaticCell::init(&LTC, ltc_mutex);
-    spawner.spawn(ltc_function(bms, ltc, err_check)).unwrap();
+    spawner.spawn(ltc_function(bms, ltc, err_check, can)).unwrap();
 
     spawner.spawn(read_can(ltc, can)).unwrap();
 
@@ -118,7 +120,7 @@ async fn read_can(
                 }
             }
         }
-        embassy_time::Timer::after_micros(5).await;
+        embassy_time::Timer::after_micros(10).await;
     }
 }
 
@@ -126,7 +128,8 @@ async fn read_can(
 async fn ltc_function(
     bms: &'static Mutex<NoopRawMutex, SLAVEBMS>, 
     ltc: &'static Mutex<NoopRawMutex, LTC6811>,
-    err_check: &'static Mutex<NoopRawMutex, Output<'static>>
+    err_check: &'static Mutex<NoopRawMutex, Output<'static>>,
+    can: &'static Mutex<NoopRawMutex, CanController<'static>>
 ) {
     let mut err_check_close = true;
     let mut time_now = embassy_time::Instant::now().as_millis();
@@ -179,6 +182,28 @@ async fn ltc_function(
             err_check_data.set_high();
         } else {
             err_check_data.set_low();
+            let mut can_data = can.lock().await;
+            let can_second = [
+                1
+            ];
+
+            let frame_send = CanFrame::new(CanMsg::ErrorId.as_raw(), &can_second);
+            match can_data.write(&frame_send).await {
+            Ok(_) => {
+                info!("Message sent! {}", &frame_send.id());
+                for i in 0..frame_send.len() {
+                    info!("Byte: {}: {}", i, &frame_send.byte(i));
+                }
+            }
+
+            Err(CanError::Timeout) => {
+                info!("Timeout Can connection");
+            }
+
+            Err(_) => {
+                info!("Can write error");
+            }
+        }
         }
         drop(err_check_data);
     }

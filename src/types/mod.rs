@@ -6,7 +6,8 @@ pub use bms::SLAVEBMS;
 pub enum CanMsg {
     VoltageId = 0x54,
     TemperatureId = 0x55,
-    Balancing = 0x1A4
+    Balancing = 0x1A4,
+    ErrorId = 0x14
 }
 
 impl CanMsg {
