@@ -204,6 +204,7 @@ async fn ltc_function(
                     info!("Can write error");
                 }
             }
+            drop(can_data);
         }
         drop(err_check_data);
     }
