@@ -18,7 +18,7 @@ macro_rules! get_byte {
     };
 }
 
-pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) {
+pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Result<(), CanError>{
     let tot_v = (bms.tot_volt()/100) as u16;
     static mut TEMP: usize = 0 as usize;
     unsafe {
@@ -47,10 +47,12 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) {
 
             Err(CanError::Timeout) => {
                 info!("Timeout Can connection");
+                return Err(CanError::Timeout);
             }
 
             Err(_) => {
                 info!("Can write error");
+                return Err(CanError::WriteError);
             }
         }
     }
@@ -60,8 +62,10 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) {
         get_byte!(bms.max_temp(), 1),
         get_byte!(bms.min_temp(), 0),
         get_byte!(bms.min_temp(), 1),
-        get_byte!(bms.avg_temp(), 0),
-        get_byte!(bms.avg_temp(), 1)
+        get_byte!(bms.current(), 0),
+        get_byte!(bms.current(), 1),
+        get_byte!(bms.current(), 2),
+        get_byte!(bms.current(), 3)
     ];
 
     let frame_send = CanFrame::new(CanMsg::TemperatureId.as_raw(), &can_second);
@@ -71,14 +75,18 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) {
             for i in 0..frame_send.len() {
                 info!("Byte: {}: {}", i, &frame_send.byte(i));
             }
+            Ok(())
+
         }
 
         Err(CanError::Timeout) => {
             info!("Timeout Can connection");
+            return Err(CanError::Timeout);
         }
 
         Err(_) => {
             info!("Can write error");
+            return Err(CanError::WriteError);
         }
     }
 }

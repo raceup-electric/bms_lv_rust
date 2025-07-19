@@ -15,6 +15,7 @@ pub struct SLAVEBMS {
     max_temp: u16,
     min_temp: u16,
     avg_temp: u16,
+    current: i32
 }
 
 #[derive(Default, Debug, Copy, Clone)]
@@ -76,13 +77,16 @@ impl BMS {
         let mut tot_temp: u32 = 0;
         self.max_temp = 0;
         self.min_temp = u16::MAX;
-        for &temp in self.temperatures.iter() {
+        for (i, &temp) in self.temperatures.iter().enumerate() {
+            if i == 0 {
+                continue;
+            }
             tot_temp = tot_temp.wrapping_add(temp as u32);
             self.max_temp = if temp > self.max_temp {temp} else {self.max_temp};
             self.min_temp = if temp < self.min_temp {temp} else {self.min_temp};
 
         }
-        let v_float = (tot_temp as f32) /(NUM_TERMISTORS as f32);
+        let v_float = (tot_temp as f32) /((NUM_TERMISTORS -1) as f32);
         let rounded: u16 = if v_float >= 0.0 {
             roundf(v_float).max(0.0) as u16
         } else {
@@ -110,7 +114,6 @@ impl BMS {
         self.max_volt
     }
 
-
     pub fn avg_temp(&self) -> u16 {
         self.avg_temp
     }
@@ -136,7 +139,8 @@ impl SLAVEBMS {
             avg_volt: 0,
             max_temp: 0,
             min_temp: 0,
-            avg_temp: 0
+            avg_temp: 0,
+            current: 0
         }
     }
 
@@ -238,7 +242,7 @@ impl SLAVEBMS {
         self.max_volt
     }
 
-    pub fn avg_temp(&self) -> u16 {
+    pub fn _avg_temp(&self) -> u16 {
         self.avg_temp
     }
 
@@ -252,5 +256,13 @@ impl SLAVEBMS {
 
     pub fn cell_volts(&self, i: usize) -> u16 {
         self.bms_history[self.index].cell_volts[i]
+    }
+
+    pub fn update_current(&mut self, value: i32) {
+        self.current = value;
+    }
+
+    pub fn current(&self) -> i32 {
+        self.current
     }
 }

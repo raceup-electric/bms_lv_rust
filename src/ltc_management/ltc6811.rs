@@ -1,10 +1,16 @@
+// IMPORT
+
 use super::spi_device::SpiDevice;
 use crate::types::{bms::SLAVEBMS, VOLTAGES};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 
-use libm::{logf, roundf};
+use libm::{roundf, logf}; // libm helper functions
 
+/*
+    Command codes from LTC6811 datasheet
+*/
+/// Write Configuration Register Group A
 pub const WRCFGA: [u8; 2] = [0x00, 0x01];
 
 /// Read Configuration Register Group A
@@ -25,22 +31,29 @@ pub const RDCVD: [u8; 2] = [0x00, 0x0A];
 /// Read Auxiliary Register Group A (for temperature)
 pub const RDAUXA: [u8; 2] = [0x00, 0x0C];
 
+/// Read Auxiliary Register Group B (for temperature)
 pub const RDAUXB: [u8; 2] = [0x00, 0x0E];
 
+/// Start Voltage Converstion
 pub const ADCV: [u8; 2] = [0x02, 0x60];
 
+/// Start Temperature Converstion
 pub const ADAX: [u8; 2] = [0x05, 0x60];
 
-// Tensione di riferimento dell'ADC (in millivolt).
-// Esempio: se usi VREF = 3.3 V con scala 12 bit, VREF2_MV = 3300
-const VREF2_MV: u32 = 3300;
+/// Polling Completed Temperature Conversion
+pub const PLADC: [u8; 2] = [0x7, 0x14];
 
-// Resistenza di pull-down fissa (in ohm) del termistore.
-// Esempio: R_THERMISTOR = 10 000 Ω (10 kΩ)
-const RTHERMISTOR_OHM: u32 = 10_000;
+
+/*
+    Various constants
+*/
+/// Resistance in ohm of 
+const RTHERMISTOR_OHM: u32 = 22_000;
+
+const R25: f32 = 9.914;
 
 // Coefficiente Beta del termistore (in Kelvin)
-const B_COEFF: f32     = 3950.0;
+const B_COEFF: f32     = 3435.0;
 // Conversione da Kelvin a Celsius
 const KELVIN_2_CELSIUS: f32 = 273.15;
 
@@ -48,18 +61,18 @@ const KELVIN_2_CELSIUS: f32 = 273.15;
 const MAX_TEMP: u16 = u16::MAX;  // OverTemp (corto a massa)
 const MIN_TEMP: u16 = 0;      
 // Thresholds and balancing parameters (example values – adjust as required)\
-const BAL_EPSILON: u16 = 50; // allowable voltage difference for balancing
+const BAL_EPSILON: i16 = 50; // allowable voltage difference for balancing
 
 // Configuration
 const NUM_CELLS: usize = 12;
-const REFON: u8 = 0x00; // Reference Powered Up
+const REFON: u8 = 0x01; // Reference Powered Up
 const ADCOPT: u8 = 0x00; // ADC Mode option bit
                          // GPIO configuration bits if needed
 const GPIO1: u8 = 0x01; // GPIO1 as digital input
 const GPIO2: u8 = 0x01; // GPIO2 as digital input
 const GPIO3: u8 = 0x01; // GPIO3 as digital input
 const GPIO4: u8 = 0x01; // GPIO4 as digital input
-const GPIO5: u8 = 0x01; // GPIO5 as digital input
+const GPIO5: u8 = 0x00; // GPIO5 as digital input
 const GPIOS: u8 = 0x0 | (GPIO1 << 3) | (GPIO2 << 4) | (GPIO3 << 5) | (GPIO4 << 6) | (GPIO5 << 7);
 
 #[allow(unused)]
@@ -88,7 +101,7 @@ const CRC15_TABLE: [u16; 256] = [
     0x8ba7, 0x4e3e, 0x450c, 0x8095,
 ];
 
-#[derive(PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum MODE {
     NORMAL,
     BALANCING,
@@ -99,7 +112,7 @@ pub struct LTC6811 {
     spi: &'static Mutex<NoopRawMutex, SpiDevice<'static>>,
     bms: &'static Mutex<NoopRawMutex, SLAVEBMS>,
     config: [u8; 6], // Configuration registers
-    mode: MODE,
+    mode: MODE
 }
 
 impl LTC6811 {
@@ -120,7 +133,7 @@ impl LTC6811 {
             spi,
             bms,
             config,
-            mode: MODE::NORMAL,
+            mode: MODE::NORMAL
         }
     }
 
@@ -145,9 +158,6 @@ impl LTC6811 {
         let _ = self.init_cfg().await;
     }
 
-    pub fn get_mode(&self) -> MODE {
-        self.mode.clone()
-    }
 
     fn prepare_command(&self, cmd: [u8; 2]) -> [u8; 4] {
         let mut cmd_f = [0u8; 4];
@@ -174,7 +184,7 @@ impl LTC6811 {
                 for i in 0..NUM_CELLS {
                     // If the cell voltage exceeds the minimum by more than BAL_EPSILON, enable discharge.
                     if (bms_data.cell_volts(i) as i16 - bms_data.min_volt() as i16)
-                        > BAL_EPSILON as i16
+                        > BAL_EPSILON
                     {
                         discharge_bitmap |= 1 << i;
                     }
@@ -187,6 +197,7 @@ impl LTC6811 {
                 self.config[4] = 0x00;
                 self.config[5] = 0x00;
             }
+            drop(bms_data);
         }
 
         // Write the configuration to the chip.
@@ -271,7 +282,17 @@ impl LTC6811 {
 
         drop(spi_data);
         // Wait for conversion to complete (typical conversion time ~2ms)
-        Timer::after(Duration::from_millis(6)).await;
+        let poll = self.prepare_command(PLADC);   // const PLADC: [u8;2] = [0x07, 0x00];
+        let mut status = [0u8; 8];
+        loop {
+            let mut spi_data = self.spi.lock().await;
+            spi_data.cmd_read(&poll, &mut status).await.unwrap();
+            if status[0] & 0x01 != 0 {
+                break; // conversion finished
+            }
+            drop(spi_data);
+            embassy_time::Timer::after_millis(1).await;
+        }
 
         Ok(())
     }
@@ -401,10 +422,12 @@ impl LTC6811 {
             u16::from_be_bytes([auxb[0], auxb[1]]), // GPIO4
         ];
 
+        let voltage_ref = u16::from_be_bytes([auxb[4], auxb[5]]);
+
         // 6) update your BMS struct
         let mut bms = self.bms.lock().await;
         for (i, &code) in codes.iter().enumerate() {
-            bms.update_temp(i, self.parse_temp(code));
+            bms.update_temp(i, self.parse_temp(code, voltage_ref));
         }
         drop(bms);
         Ok(())
@@ -413,11 +436,7 @@ impl LTC6811 {
     // Periodic update - call this regularly to keep BMS data fresh
     pub async fn update(&mut self) -> Result<(), ()> {
         // Read all cell voltages
-        if self.mode != MODE::NORMAL {
-            self.set_mode(MODE::NORMAL).await;
-        }
-
-        let _ = self.init_cfg().await;
+        self.set_mode(MODE::NORMAL).await;
 
         match self.read_cell_voltages().await {
             Ok(_) => {}
@@ -429,7 +448,6 @@ impl LTC6811 {
             Ok(_) => {},
             Err(_) => return Err(()),
         }
-
         let mut bms_data = self.bms.lock().await;
         bms_data.update();
         drop(bms_data);
@@ -437,119 +455,43 @@ impl LTC6811 {
         Ok(())
     }
 
-    pub fn parse_temp(&self, adc_raw: u16) -> u16 {
-        // 1) SE raw == 0 → corto a massa, OverTemp:
-        if adc_raw == 0 {
-            return MAX_TEMP;
+    pub fn parse_temp(&self, voltage_gpio: u16, voltage_ref: u16) -> u16 {
+        if voltage_gpio == 0 {
+            return u16::MAX;
         }
-        // 2) Se raw > ADC_MAX (impossibile, ma mettiamo un clamp):
-        if adc_raw > 65534 {
-            // Se davvero superiore, consideriamo termistore aperto:
-            return adc_raw;
-        }
+        let r_th = (RTHERMISTOR_OHM as f32)* (voltage_gpio as f32)*0.1 / ((voltage_gpio as f32)*0.1 + (((voltage_ref as f32 + 60000 as f32) * 0.1))); 
 
-        // 3) Converto raw ADC in millivolt:
-        //    volt_mv = (adc_raw / ADC_MAX) * VREF2_MV
-        // Usiamo un cast a f32 per non perdere precisione intermedia:
+        let inv_t = 1f32/(KELVIN_2_CELSIUS + 25f32) + (1f32/B_COEFF) * logf((r_th/1000f32) / R25);
         
-        let volt_mv_f: f32 = (adc_raw as f32) * 0.1; // 0.1 mV/LSB
-        let volt_mv: u16 = roundf(volt_mv_f) as u16;
-        
-        // 4) Controlli di “circuito aperto”: se volt_mv >= VREF2_MV, termistore scollegato
-        if (volt_mv as u32) >= VREF2_MV {
-            return MIN_TEMP;
+
+        if inv_t < 0.0f32 {
+            return u16::MIN;
         }
 
-        // 5) Calcolo la resistenza del termistore (in ohm) col partitore:
-        //       Vout = adc_volt_mv, Vin = VREF2_MV
-        //
-        //   R_th = R_fixed * (Vout / (Vin - Vout))
-        //
-        // Passo a f32 per il calcolo con virgola mobile:
-        let v_out: f32 = volt_mv as f32;
-        let v_ref: f32 = VREF2_MV as f32;
-        let r_fixed: f32 = RTHERMISTOR_OHM as f32;
+        let temp = if inv_t != 0.0f32 {1.0f32/inv_t} else {1.0f32/(inv_t+ 1e-6)};
 
-        // Aggiungo un piccolo epsilon sul denominatore per evitare divisioni per zero
-        let eps: f32 = 1e-6;
-        let denom = v_ref - v_out;
-        if denom <= 0.0 {
-            // al netto del controllo precedente, questo non dovrebbe succedere,
-            // ma se succede (per questioni di arrotondamento), la trattiamo come OPEN:
-            return MIN_TEMP;
-        }
-        let r_th: f32 = r_fixed * v_out / (denom + eps);
-
-        // 6) Calcolo della temperatura con Beta-Steinhart semplificato:
-        //
-        //    T(K) = B / ln(A * R_th)
-        //    Temp(°C) = T(K) - 273.15
-        //
-        // In molti datasheet, A = 58.65 per un termistore da 10kΩ a 25°C.
-        let a_coeff: f32 = 58.65_f32;
-        let ln_arg = a_coeff * r_th;
-
-        // Se ln_arg ≤ 0, logf restituisce NaN; lo trattiamo come temperatura minima (0°C):
-        if ln_arg <= 0.0 {
-            return MIN_TEMP;
-        }
-        let temp_kelvin: f32 = B_COEFF / logf(ln_arg);
-        let temp_celsius: f32 = temp_kelvin - KELVIN_2_CELSIUS;
-
-        // 7) Saturazione tra 0 e u16::MAX
-        //    Prima passo a intero con arrotondamento,
-        //    poi clamppo entro i limiti.
-        let temp_i32: i32 = roundf(temp_celsius) as i32;
+        let temp_i32: i32 = roundf((temp - KELVIN_2_CELSIUS)*10.0f32) as i32;
         if temp_i32 < (MIN_TEMP as i32) {
-            MIN_TEMP
+            return MIN_TEMP;
         } else if temp_i32 > (MAX_TEMP as i32) {
-            MAX_TEMP
+            return MAX_TEMP;
         } else {
             temp_i32 as u16
-        }
+        }        
     }
 
-    // Balance cells if needed
-    pub async fn balance_cells(&mut self) -> Result<(), ()> {
-        self.set_mode(MODE::BALANCING).await;
-
-        let bms_data: embassy_sync::mutex::MutexGuard<'_, NoopRawMutex, SLAVEBMS> =
-            self.bms.lock().await;
-
-        // Get current cell data
-        let min_volt: u16 = bms_data.min_volt();
-
-        // For each cell, check if it needs balancing
+    pub async fn check_need_balance(&self) -> bool {
+        let bms_data = self.bms.lock().await;
+        // Iterate over all 12 cells. Here we assume that bms_data.cell_volts is an array of 12 u16.
         for i in 0..NUM_CELLS {
-            let cell_volt = bms_data.cell_volts(i);
-
-            // If this cell's voltage is above threshold compared to minimum,
-            // enable its discharge circuit
-            if cell_volt - min_volt > BAL_EPSILON {
-                // Enable discharge for this cell by setting the appropriate bit in config
-                // CFGR4 and CFGR5 control the discharge transistors
-                // Cell 1-8 are in CFGR4, cells 9-12 are in CFGR5
-                if i < 8 {
-                    self.config[4] |= 1 << i;
-                } else {
-                    self.config[5] |= 1 << (i - 8);
-                }
-            } else {
-                // Disable discharge for this cell
-                if i < 8 {
-                    self.config[4] &= !(1 << i);
-                } else {
-                    self.config[5] &= !(1 << (i - 8));
-                }
+            // If the cell voltage exceeds the minimum by more than BAL_EPSILON, enable discharge.
+            if (bms_data.cell_volts(i) as i16 - bms_data.min_volt() as i16)
+                > BAL_EPSILON
+            {
+                return true;
             }
         }
-
-        drop(bms_data);
-
-        // Write the updated configuration to enable/disable balancing
-        self.write_config().await?;
-
-
-        Ok(())
+        false
     }
+
 }
