@@ -455,6 +455,8 @@ impl LTC6811 {
         Ok(())
     }
 
+    //  VediQualcosa?1
+
     pub fn parse_temp(&self, voltage_gpio: u16, voltage_ref: u16) -> u16 {
         if voltage_gpio == 0 {
             return u16::MAX;

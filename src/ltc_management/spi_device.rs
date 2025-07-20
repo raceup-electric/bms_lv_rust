@@ -4,8 +4,6 @@ use embassy_stm32::spi::{BitOrder, Config, Instance, MisoPin, MosiPin, RxDma, Sc
 use embassy_stm32::time::Hertz;
 use embassy_stm32::Peripheral;
 
-use {defmt_rtt as _, panic_probe as _};
-
 pub struct SpiDevice<'a> {
     spi: Option<Spi<'a, Async>>,
     pub cs: Output<'a>

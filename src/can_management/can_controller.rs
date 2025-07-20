@@ -65,8 +65,8 @@ impl<'a> CanController<'a>{
         Self::new(controller, baudrate).await
     }
 
-    pub async fn new_can2(peri: CAN2, rx: PB12, tx: PB13, baudrate: u32, peri1: CAN1, rx1: PA11, tx1: PA12) -> Self {
-        let mut can1 = Can::new(peri1, rx1, tx1, Irqs1);
+    pub async fn new_can2(peri: CAN2, rx: PB12, tx: PB13, baudrate: u32, peri1: CAN1, mut rx1: PA11, mut tx1: PA12) -> (Self, PA11, PA12) {
+        let mut can1 = Can::new(peri1, &mut rx1, &mut tx1, Irqs1);
  
         let controller = CanController {
             can: Can::new(peri, rx, tx, Irqs2),
@@ -79,7 +79,7 @@ impl<'a> CanController<'a>{
         can1.sleep().await;
         drop(can1);
 
-        Self::new(controller, baudrate).await        
+        (Self::new(controller, baudrate).await, rx1, tx1)       
     }
 
     pub async fn write(&mut self, frame: &CanFrame) -> Result<(), CanError> {
