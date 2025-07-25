@@ -11,9 +11,10 @@ embassy-time = { version = "^0.4.0", features = ["defmt", "defmt-timestamp-uptim
 embassy-usb = { version = "^0.4.0", features = ["defmt" ] }
 embassy-futures = { version = "^0.1.0"}
 static_cell = "^1.2.0"
-defmt = "^1.0.1"
-defmt-serial = "^0.10"
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"  
 embassy-usb-logger = "0.4.0" 
+usb-device = "0.2" 
 
 cortex-m = { version = "^0.7.6", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "^0.7.0"
@@ -21,13 +22,16 @@ embedded-hal = "^0.2.6"
 embedded-hal-bus = { version = "^0.2", features = ["async"] }
 embedded-io = { version = "^0.6.0" }
 embedded-io-async = { version = "^0.6.1" }
-panic-halt = { version = "1.0.0"}
+panic-probe = { version = "1.0.0", features=["print-defmt"]}
 futures-util = { version = "^0.3.30", default-features = false }
 heapless = { version = "^0.8", default-features = false }
 
 log = "0.4.27"
-libm = "0.2"
+libm = "0.2.15"
 
 [profile.release]
 debug = 2
 test = false
+
+[package.metadata.defmt]
+panic = "defmt"

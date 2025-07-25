@@ -1,11 +1,10 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
 use libm::roundf;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::adc::{Adc, Resolution, SampleTime};
+use embassy_stm32::adc::{Adc, Resolution};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use static_cell::StaticCell;
@@ -14,7 +13,8 @@ use embassy_stm32::peripherals::ADC1;
 use crate::usb_serial::usb::Serial;
 use crate::{can_management::{CanError, CanFrame}, ltc_management::ltc6811::MODE, types::_TEMPERATURES};
 
-use {defmt_serial as _, panic_halt as _};
+use defmt::info;
+use panic_probe as _;
 
 mod types;
 mod can_management;
@@ -41,7 +41,13 @@ async fn main(spawner: Spawner) -> ! {
 
     let current_adc: embassy_stm32::adc::Adc<'static, ADC1, > = Adc::new(p.ADC1);
     let current_pin: embassy_stm32::peripherals::PA1 = p.PA1;
+
+    let (can, rx1, tx1) = CanController::new_can2(p.CAN2, p.PB12, p.PB13, 500_000, p.CAN1, p.PA11, p.PA12).await;
+    let can_mutex = Mutex::new(can);
+    let can = StaticCell::init(&CAN, can_mutex);
     
+    Serial::init(p.USB_OTG_FS, tx1, rx1, & spawner);
+
     let debug_led = Output::new(p.PC13, Level::Low, Speed::High);
     let temp_led = Output::new(p.PC9, Level::Low, Speed::High);
     let voltage_led = Output::new(p.PC11, Level::Low, Speed::High);
@@ -59,16 +65,10 @@ async fn main(spawner: Spawner) -> ! {
     let bms = StaticCell::init(&BMS, bms_mutex);
 
     spawner.spawn(current_sense(current_adc, current_pin, bms)).unwrap();
-
-    let (can, rx1, tx1) = CanController::new_can2(p.CAN2, p.PB12, p.PB13, 500_000, p.CAN1, p.PA11, p.PA12).await;
-    let can_mutex = Mutex::new(can);
-    let can = StaticCell::init(&CAN, can_mutex);
+    
     spawner.spawn(send_can(bms, can)).unwrap();
 
-    Serial::init(p.USB_OTG_FS, tx1, rx1, & spawner);
-
     defmt::info!("Hello world over USB-CDC!");
-    // Run the USB device.
 
     let spi: SpiDevice<'static> = SpiDevice::new(p.SPI1, p.PA5, p.PA7, p.PA6, p.PA4, p.DMA2_CH3, p.DMA2_CH0).await;
     let spi_mutex = Mutex::new(spi);
@@ -87,19 +87,9 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(read_can(is_balance, can)).unwrap();
 
     loop {
-        let avail = Serial::available();
-        if avail > 0 {
-            // 2) Read as many bytes as you like; here we just grab one at a time
-            if let Some(byte) = Serial::read() {
-                // Process the received byte
-                Serial::write_nl(&[byte]);
-                defmt::info!("{}", byte);
-                if byte as char == 'a' {    
-                    Serial::write_nl(b"Ciao");
-                }
-            }
-        }
-        embassy_time::Timer::after_micros(10).await;
+        embassy_time::Timer::after_millis(10000).await;
+        defmt::info!("FINO A QUI");
+        defmt::panic!("CIAO");
     }
 }
 
@@ -115,7 +105,6 @@ async fn current_sense(
     bms: &'static Mutex<NoopRawMutex, SLAVEBMS>
 ) {
     adc.set_resolution(Resolution::BITS12);
-    adc.set_sample_time(SampleTime::CYCLES480);
     embassy_time::Timer::after_millis(100).await;
 
     let mut count: u64 = 0;
@@ -131,7 +120,7 @@ async fn current_sense(
         count = 0;
         for _ in 0..50 {
             count = count.wrapping_add(adc.blocking_read(&mut curr_pin) as u64);
-            embassy_time::Timer::after_micros(50).await;
+            embassy_time::Timer::after_micros(200).await;
         }
 
         let mut f_curr = ((count as f32)/50.0f32) * 3300f32 / (4095 as f32);
@@ -148,9 +137,6 @@ async fn current_sense(
         bms_data.update_current(rounded);
 
         drop(bms_data);
-        embassy_time::Timer::after_millis(20000).await;
-        panic!("assertion failed!");
-
     }
 }
 

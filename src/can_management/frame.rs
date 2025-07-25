@@ -1,5 +1,4 @@
 use embassy_stm32::can::{frame::Envelope, Frame, Id, StandardId};
-use defmt::unwrap;
 
 #[derive(Clone)]
 pub struct CanFrame {
@@ -16,7 +15,10 @@ impl CanFrame {
 
         frame_data[..len].copy_from_slice(&data[..len]);
 
-        let tx_frame = Frame::new_data(unwrap!(StandardId::new(id as _)), data).unwrap();
+        let tx_frame = Frame::new_data(
+            StandardId::new(id as _).unwrap(),
+            data,
+        ).unwrap();
 
         CanFrame {
             id,

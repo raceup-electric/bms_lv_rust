@@ -10,15 +10,16 @@ use embassy_executor::Spawner;
 use heapless::String;
 use heapless::spsc::{Queue, Producer, Consumer};
 use core::{ptr, fmt::Write};
+use embassy_futures::join::join;
 
 bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
 });
 
-static mut EP_OUT_BUFFER:     [u8; 512] = [0; 512];
-static mut CONFIG_DESCRIPTOR: [u8; 256] = [0; 256];
-static mut BOS_DESCRIPTOR:    [u8; 256] = [0; 256];
-static mut CONTROL_BUF:       [u8; 256]  = [0; 256];
+static EP_OUT_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
+static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+static CONTROL_BUF: StaticCell<[u8; 512]>  = StaticCell::new();
 
 // SPSC queue storage for incoming bytes
 static STATE_CELL: StaticCell<State> = StaticCell::new();
@@ -30,13 +31,14 @@ static mut RX_QUEUE_PTR: *mut Queue<u8, 256> = core::ptr::null_mut();
 
 pub struct Serial;
 
+#[allow(unused)]
 impl Serial {
     pub fn init(otg_fs: USB_OTG_FS, pa12: PA12, pa11: PA11, spawner: &Spawner) {
         
-        let ep_out = &raw mut EP_OUT_BUFFER;
-        let config_desc = &raw mut CONFIG_DESCRIPTOR;
-        let bos_desc    = &raw mut BOS_DESCRIPTOR;
-        let control     = &raw mut CONTROL_BUF;
+        let ep_out  = EP_OUT_BUFFER.init([0; 256]);
+        let config_desc = CONFIG_DESCRIPTOR.init([0; 256]);
+        let bos_desc    = BOS_DESCRIPTOR.init([0; 256]);
+        let control     = CONTROL_BUF.init([0; 512]);
 
         let mut config = embassy_stm32::usb::Config::default();
 
@@ -78,7 +80,6 @@ impl Serial {
 
         spawner.spawn(usb_driver_task(usb_dev)).unwrap();
         spawner.spawn(usb_io_task(cdc, rx_prod, tx_cons)).unwrap();
-
     }
 
     pub fn available() -> usize {
@@ -103,6 +104,10 @@ impl Serial {
         unsafe { let _ = (*TX_QUEUE_PTR).enqueue('\r' as u8); }
         unsafe { let _ = (*TX_QUEUE_PTR).enqueue('\n' as u8); }
     }
+
+    pub fn write_len() -> usize{
+        unsafe {(*TX_QUEUE_PTR).len()}
+    }
 }
 
 
@@ -116,60 +121,67 @@ pub async fn usb_driver_task(
 #[embassy_executor::task]
 async fn usb_io_task(
     mut class: CdcAcmClass<'static, Driver<'static, USB_OTG_FS>>,
-    mut prod: Producer<'static, u8, 256>,
+    mut rx_prod: Producer<'static, u8, 256>,
     mut tx_cons: Consumer<'static, u8, 256>,
 ) {
-    let mut rx_buf = [0u8; 256];
-    let mut tx_buf = [0u8; 64];
+    // Wait until the host opens the port
+    class.wait_connection().await;
 
-    loop {
-        class.wait_connection().await;
+    // Split into a sender (IN endpoint) and receiver (OUT endpoint)
+    let (mut tx, mut rx) = class.split();
 
+    // Reader task
+    let reader = async {
+        let mut buf = [0u8; 64];
         loop {
-            // Make sure host is ready to receive data
-            if !class.dtr() {
-                embassy_time::Timer::after_millis(10).await;
+            match rx.read_packet(&mut buf).await {
+                Ok(len) => {
+                    for &b in &buf[..len] {
+                        let _ = rx_prod.enqueue(b);
+                    }
+                }
+                Err(_) => break, // host disconnected
+            }
+            embassy_time::Timer::after_micros(20).await;   
+        }
+    };
+
+    // Writer task
+    let writer = async {
+        let mut buf = [0u8; 64];
+        loop {
+            if !tx.dtr() {
+                embassy_time::Timer::after_millis(2).await;
                 continue;
             }
 
-            // Receive from host
-            match class.read_packet(&mut rx_buf).await {
-                Ok(len) => {
-                    for &b in &rx_buf[..len] {
-                        let _ = prod.enqueue(b);
-                    }
-                }
-                Err(_) => break, // disconnected or error
-            }
-
-            embassy_time::Timer::after_micros(20).await;
-
-            let mut tx_len = 0;
-            while tx_len < tx_buf.len() {
+            let mut n = 0;
+            while n < buf.len() {
                 match tx_cons.dequeue() {
                     Some(b) => {
-                        tx_buf[tx_len] = b;
-                        tx_len += 1;
+                        buf[n] = b;
+                        n += 1;
                     }
                     None => break,
                 }
             }
 
-            if tx_len > 0 {
-                match class.write_packet(&tx_buf[..tx_len]).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        defmt::warn!("USB write failed: {:?}", e);
-                        break;
-                    }
-                }
+            if n > 0 {
+                if n == 64 {
+                    let _ = tx.write_packet(&buf).await;
+                    // Send ZLP
+                    let _ = tx.write_packet(&[]).await;
+                } else {
+                    let _ = tx.write_packet(&buf[..n]).await;
+                }   
+            } else {
+                embassy_time::Timer::after_micros(20).await;
             }
-
-            embassy_time::Timer::after_millis(1).await;
         }
-    }
-}
+    };
 
+    join(reader, writer).await;
+}
 
 pub fn mk_usb_serial() -> &'static str {
     // 3×32‑bit words → 24 hex digits

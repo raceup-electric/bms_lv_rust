@@ -1,4 +1,5 @@
 pub mod usb;
+pub mod log;
 
 use embassy_stm32::Config;
 use embassy_stm32::time::Hertz;
