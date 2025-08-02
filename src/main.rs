@@ -14,7 +14,7 @@ use crate::usb_serial::usb::Serial;
 use crate::{can_management::{CanError, CanFrame}, ltc_management::ltc6811::MODE, types::_TEMPERATURES};
 
 use defmt::info;
-use panic_probe as _;
+// use panic_probe as _;
 
 mod types;
 mod can_management;
@@ -89,7 +89,7 @@ async fn main(spawner: Spawner) -> ! {
     loop {
         embassy_time::Timer::after_millis(10000).await;
         defmt::info!("FINO A QUI");
-        defmt::panic!("CIAO");
+        defmt::panic!("PANICKED");
     }
 }
 
@@ -137,6 +137,7 @@ async fn current_sense(
         bms_data.update_current(rounded);
 
         drop(bms_data);
+        embassy_time::Timer::after_millis(10).await;
     }
 }
 
@@ -227,14 +228,14 @@ async fn ltc_function(
         if balance == true{
             for _ in 0..5 {
                 match ltc_data.update().await {
-                Ok(_) => {
-                    defmt::info!("Battery Reading okay");
-                },
-                Err(_) => {
-                    defmt::error!("Failed to update battery data");
+                    Ok(_) => {
+                        defmt::info!("Battery Reading okay");
+                    },
+                    Err(_) => {
+                        defmt::error!("Failed to update battery data");
+                    }
                 }
             }
-        }
         }
 
         drop(ltc_data);
@@ -257,6 +258,10 @@ async fn ltc_function(
             }
         } else {
             temp_led.set_low();
+        }
+
+        for i in 0..12 {
+            defmt::info!("Cell {}: {} mV", i, roundf(bms_data.cell_volts(i) as f32 /10f32));
         }
         drop(bms_data);
 

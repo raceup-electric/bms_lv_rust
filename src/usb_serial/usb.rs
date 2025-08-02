@@ -1,3 +1,4 @@
+use embassy_time::{Duration, Timer};
 use embassy_usb::Builder;
 use embassy_stm32::usb::Driver;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
@@ -90,6 +91,28 @@ impl Serial {
         unsafe { (*RX_QUEUE_PTR).dequeue() }
     }
 
+    pub async fn read_line<const N: usize>() -> String<N> {
+        let mut buf: String<N> = String::new();
+        loop {
+            if let Some(b) = Self::read() {
+                match b {
+                    b'\r' => {}
+                    b'\n' => {
+                        break;
+                    }
+                    _ => {
+                        let _ = buf.push(b as char);
+                    }
+                }
+            } else {
+                // no data
+                Timer::after(Duration::from_millis(5)).await;
+            }
+        }
+        buf
+    }
+
+
     pub fn write(buf: &[u8]) {
         for &b in buf {
             unsafe { let _ = (*TX_QUEUE_PTR).enqueue(b); }
@@ -107,6 +130,10 @@ impl Serial {
 
     pub fn write_len() -> usize{
         unsafe {(*TX_QUEUE_PTR).len()}
+    }
+
+    pub fn flush() {
+        
     }
 }
 
