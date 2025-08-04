@@ -4,16 +4,16 @@ use embassy_stm32::can::{frame::Envelope, Frame, Id, StandardId};
 pub struct CanFrame {
     id: u16,
     data: [u8; 8],
-    len: usize,
+    _len: usize,
     frame: Frame
 }
 
 impl CanFrame {
     pub fn new(id: u16, data: &[u8]) -> Self {
         let mut frame_data = [0u8; 8]; 
-        let len = data.len().min(8);
+        let _len = data.len().min(8);
 
-        frame_data[..len].copy_from_slice(&data[..len]);
+        frame_data[.._len].copy_from_slice(&data[.._len]);
 
         let tx_frame = Frame::new_data(
             StandardId::new(id as _).unwrap(),
@@ -23,7 +23,7 @@ impl CanFrame {
         CanFrame {
             id,
             data: frame_data,
-            len,
+            _len,
             frame: tx_frame
         }
     }
@@ -43,7 +43,7 @@ impl CanFrame {
         CanFrame {
             id,
             data: frame_data,
-            len: rx_frame.header().len() as usize,
+            _len: rx_frame.header().len() as usize,
             frame: rx_frame
         }
     }
@@ -56,7 +56,7 @@ impl CanFrame {
         self.data
     }
 
-    pub fn byte(&self, index: usize) -> u8 {
+    pub fn _byte(&self, index: usize) -> u8 {
         self.data[index]
     }
 
@@ -64,7 +64,7 @@ impl CanFrame {
         self.id
     }
 
-    pub fn len(&self) -> usize {
-        self.len
+    pub fn _len(&self) -> usize {
+        self._len
     }
 }

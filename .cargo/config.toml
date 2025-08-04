@@ -7,7 +7,7 @@ runner ="sh post_build.sh"
 target = "thumbv7em-none-eabihf"
 
 [env]
-DEFMT_LOG = "debug"
+DEFMT_LOG = "trace"
 EMBASSY_USB_MAX_INTERFACE_COUNT        = "16"
 EMBASSY_USB_MAX_HANDLER_COUNT          = "16"
 EMBASSY_USB_MAX_DESCRIPTOR_BUFFER_SIZE = "256"

@@ -461,7 +461,7 @@ impl LTC6811 {
         if voltage_gpio == 0 {
             return u16::MAX;
         }
-        let r_th = (RTHERMISTOR_OHM as f32)* (voltage_gpio as f32)*0.1 / ((voltage_gpio as f32)*0.1 + (((voltage_ref as f32 + 60000 as f32) * 0.1))); 
+        let r_th = (RTHERMISTOR_OHM as f32)* (voltage_gpio as f32)*0.1 / ((voltage_gpio as f32)*0.1 + (((voltage_ref as f32) * 0.1))); 
 
         let inv_t = 1f32/(KELVIN_2_CELSIUS + 25f32) + (1f32/B_COEFF) * logf((r_th/1000f32) / R25);
         

@@ -22,7 +22,7 @@ mod ltc_management;
 mod usb_serial;
 
 use types::{CanMsg, VOLTAGES, SLAVEBMS};
-use can_management::{can_operation, CanController};
+use can_management::{can_operation, can_operation_tech, CanController};
 use ltc_management::{SpiDevice, LTC6811};
 use usb_serial::prepare_config;
 
@@ -32,6 +32,8 @@ static CAN: StaticCell<Mutex<NoopRawMutex, CanController>> = StaticCell::new();
 static SPI: StaticCell<Mutex<NoopRawMutex, SpiDevice>> = StaticCell::new();
 static LTC: StaticCell<Mutex<NoopRawMutex, LTC6811>> = StaticCell::new();
 static IS_BALANCE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
+static IS_TECH: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
+
 
 const VOLTAGE_OFFSET: f32 = 1650f32; //mV
 
@@ -60,15 +62,19 @@ async fn main(spawner: Spawner) -> ! {
     let is_balance_mutex = Mutex::new(is_balance);
     let is_balance = StaticCell::init(&IS_BALANCE, is_balance_mutex);
 
+    let is_tech = false;
+    let is_tech_mutex = Mutex::new(is_tech);
+    let is_tech = StaticCell::init(&IS_TECH, is_tech_mutex);
+
     let bms = setup_bms();
     let bms_mutex = Mutex::new(bms);
     let bms = StaticCell::init(&BMS, bms_mutex);
 
     spawner.spawn(current_sense(current_adc, current_pin, bms)).unwrap();
     
-    spawner.spawn(send_can(bms, can)).unwrap();
+    spawner.spawn(send_can(bms, can, is_tech)).unwrap();
 
-    defmt::info!("Hello world over USB-CDC!");
+    //info!("Hello world over USB-CDC!");
 
     let spi: SpiDevice<'static> = SpiDevice::new(p.SPI1, p.PA5, p.PA7, p.PA6, p.PA4, p.DMA2_CH3, p.DMA2_CH0).await;
     let spi_mutex = Mutex::new(spi);
@@ -76,7 +82,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut ltc = LTC6811::new(spi, bms).await;  // Initialize LTC6811
     match ltc.init().await {
-        Ok(_) => defmt::info!("LTC6811 initialized successfully"),
+        Ok(_) => {},//info!("LTC6811 initialized successfully"),
         Err(_) => defmt::error!("Failed to initialize LTC6811"),
     }
 
@@ -84,12 +90,11 @@ async fn main(spawner: Spawner) -> ! {
     let ltc = StaticCell::init(&LTC, ltc_mutex);
     spawner.spawn(ltc_function(bms, ltc, err_check, can, debug_led, voltage_led, temp_led, is_balance)).unwrap();
 
-    spawner.spawn(read_can(is_balance, can)).unwrap();
+    spawner.spawn(read_can(is_balance, can, is_tech)).unwrap();
 
     loop {
         embassy_time::Timer::after_millis(10000).await;
-        defmt::info!("FINO A QUI");
-        defmt::panic!("PANICKED");
+        //info!("FINO A QUI");
     }
 }
 
@@ -146,6 +151,7 @@ async fn current_sense(
 async fn send_can(
     bms: &'static Mutex<NoopRawMutex, SLAVEBMS>, 
     can: &'static Mutex<NoopRawMutex, CanController<'static>>,
+    is_tech: &'static Mutex<NoopRawMutex, bool>
 ){
     // let mut err_count: u16 = 0;
     loop {
@@ -157,7 +163,24 @@ async fn send_can(
         }
         drop(can_data);
         drop(bms_data);
-        embassy_time::Timer::after_millis(100).await;
+        embassy_time::Timer::after_millis(10).await;
+
+        let is_tech_data = is_tech.lock().await;
+        let tech: bool = *is_tech_data;
+        drop(is_tech_data);
+        embassy_time::Timer::after_millis(1).await;
+        if tech == true{
+            let bms_data = bms.lock().await;
+            let mut can_data = can.lock().await;
+            match can_operation_tech(&bms_data, &mut can_data).await {
+                Ok(_) => {},
+                Err(_) => {}
+            }
+            drop(can_data);
+            drop(bms_data);
+        }
+        embassy_time::Timer::after_millis(189).await;
+
     }
 }
 
@@ -165,6 +188,7 @@ async fn send_can(
 async fn read_can(
     is_balance: &'static Mutex<NoopRawMutex, bool>,
     can: &'static Mutex<NoopRawMutex, CanController<'static>>,
+    is_tech: &'static Mutex<NoopRawMutex, bool>
 ){
     loop {
         let mut can_data = can.lock().await;
@@ -185,13 +209,25 @@ async fn read_can(
                         drop(is_balance_data);
                     }
                 }
+                if id == CanMsg::Tech.as_raw() {
+                    if bytes[0] >= 0x1 as u8 {
+                        let mut is_tech_data = is_tech.lock().await;
+                        *is_tech_data = true;
+                        drop(is_tech_data);
+
+                    } else if bytes[0] == 0x0 as u8 {
+                        let mut is_tech_data = is_tech.lock().await;
+                        *is_tech_data = false;
+                        drop(is_tech_data);
+                    }
+                }
             }
             Err(_) => {
                 drop(can_data);
-                info!("No messages");
+                // //info!("No messages");
             }
         }
-        embassy_time::Timer::after_micros(10).await;
+        embassy_time::Timer::after_micros(50).await;
     }
 }
 
@@ -211,11 +247,13 @@ async fn ltc_function(
     let mut first_close = false;
 
     loop {
+        info!("1");
+
         let mut ltc_data = ltc.lock().await;
 
         match ltc_data.update().await {
             Ok(_) => {
-                defmt::info!("Battery Reading okay");
+                //info!("Battery Reading okay");
             },
             Err(_) => {
                 defmt::error!("Failed to update battery data");
@@ -229,7 +267,7 @@ async fn ltc_function(
             for _ in 0..5 {
                 match ltc_data.update().await {
                     Ok(_) => {
-                        defmt::info!("Battery Reading okay");
+                        //info!("Battery Reading okay");
                     },
                     Err(_) => {
                         defmt::error!("Failed to update battery data");
@@ -239,12 +277,14 @@ async fn ltc_function(
         }
 
         drop(ltc_data);
+        info!("2");
 
         let bms_data = bms.lock().await;
-        
+        info!("3");
         if &bms_data.min_volt() < &VOLTAGES::MINVOLTAGE.as_raw() || &bms_data.max_volt() > &VOLTAGES::MAXVOLTAGE.as_raw(){
             if embassy_time::Instant::now().as_millis() - time_now > 450 {
                 err_check_close = false;
+                
             }
         } else {
             err_check_close = true;
@@ -261,9 +301,11 @@ async fn ltc_function(
         }
 
         for i in 0..12 {
-            defmt::info!("Cell {}: {} mV", i, roundf(bms_data.cell_volts(i) as f32 /10f32));
+            info!("Cell {}: {} mV", i, roundf(bms_data.cell_volts(i) as f32 /10f32));
         }
         drop(bms_data);
+        
+        info!("3");
 
         let mut err_check_data = err_check.lock().await;
         if err_check_close {
@@ -273,7 +315,7 @@ async fn ltc_function(
             debug_led.set_low();
         } else {
             err_check_data.set_low();
-            if embassy_time::Instant::now().as_millis() > 2000 || first_close{
+            if embassy_time::Instant::now().as_millis() > 2000 || first_close {
                 voltage_led.set_high();
                 debug_led.toggle();
                 let mut can_data = can.lock().await;
@@ -283,12 +325,7 @@ async fn ltc_function(
 
                 let frame_send = CanFrame::new(CanMsg::ErrorId.as_raw(), &can_second);
                 match can_data.write(&frame_send).await {
-                    Ok(_) => {
-                        info!("Message sent! {}", &frame_send.id());
-                        for i in 0..frame_send.len() {
-                            info!("Byte: {}: {}", i, &frame_send.byte(i));
-                        }
-                    }
+                    Ok(_) => {}
 
                     Err(CanError::Timeout) => {
                         info!("Timeout Can connection");
@@ -299,9 +336,12 @@ async fn ltc_function(
                     }
                 }
                 drop(can_data);
+                embassy_time::Timer::after_millis(200).await;
             }
         }
         drop(err_check_data);
+
+        info!("4");
         
         let mut is_balance_data = is_balance.lock().await;
         let balance: bool = *is_balance_data;
@@ -317,10 +357,12 @@ async fn ltc_function(
             }
             drop(ltc_data);
         } else {
-            embassy_time::Timer::after_millis(1).await;
+            embassy_time::Timer::after_millis(5).await;
         }
 
         drop(is_balance_data);
+        info!("ALIVE");
+        embassy_time::Timer::after_millis(5).await;
     }
 } 
 

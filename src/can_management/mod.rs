@@ -4,7 +4,6 @@ use crate::types::SLAVEBMS;
 use crate::CanMsg;
 pub use can_controller::CanController;
 pub use can_controller::CanError;
-use defmt::info;
 pub use frame::CanFrame;
 
 #[macro_export]
@@ -38,20 +37,15 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Resul
         }
         let frame_send = CanFrame::new(CanMsg::VoltageId.as_raw(), &can_first);
         match can.write(&frame_send).await {
-            Ok(_) => {
-                info!("Message sent! {}", &frame_send.id());
-                for i in 0..frame_send.len() {
-                    info!("Byte: {}: {}", i, &frame_send.byte(i));
-                }
-            }
+            Ok(_) => {}
 
             Err(CanError::Timeout) => {
-                info!("Timeout Can connection");
+                //info!("Timeout Can connection");
                 return Err(CanError::Timeout);
             }
 
             Err(_) => {
-                info!("Can write error");
+                //info!("Can write error");
                 return Err(CanError::WriteError);
             }
         }
@@ -70,22 +64,99 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Resul
 
     let frame_send = CanFrame::new(CanMsg::TemperatureId.as_raw(), &can_second);
     match can.write(&frame_send).await {
-        Ok(_) => {
-            info!("Message sent! {}", &frame_send.id());
-            for i in 0..frame_send.len() {
-                info!("Byte: {}: {}", i, &frame_send.byte(i));
-            }
-            Ok(())
-
-        }
+        Ok(_) => Ok(()),
 
         Err(CanError::Timeout) => {
-            info!("Timeout Can connection");
+            //info!("Timeout Can connection");
             return Err(CanError::Timeout);
         }
 
         Err(_) => {
-            info!("Can write error");
+            //info!("Can write error");
+            return Err(CanError::WriteError);
+        }
+    }
+}
+
+
+
+pub async fn can_operation_tech(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Result<(), CanError>{
+    let can_first: [u8; 8] = [
+        get_byte!(bms.cell_volts(0), 0),
+        get_byte!(bms.cell_volts(0), 1),
+        get_byte!(bms.cell_volts(1), 0),
+        get_byte!(bms.cell_volts(1), 1),
+        get_byte!(bms.cell_volts(2), 0),
+        get_byte!(bms.cell_volts(2), 1),
+        get_byte!(bms.cell_volts(3), 0),
+        get_byte!(bms.cell_volts(3), 1)
+    ];
+    let frame_send = CanFrame::new(CanMsg::Tech1.as_raw(), &can_first);
+    match can.write(&frame_send).await {
+        Ok(_) => {}
+
+        Err(CanError::Timeout) => {
+            //info!("Timeout Can connection");
+            return Err(CanError::Timeout);
+        }
+
+        Err(_) => {
+            //info!("Can write tech error");
+            return Err(CanError::WriteError);
+        }
+    }
+
+    let can_second = [
+        get_byte!(bms.cell_volts(4), 0),
+        get_byte!(bms.cell_volts(4), 1),
+        get_byte!(bms.cell_volts(5), 0),
+        get_byte!(bms.cell_volts(5), 1),
+        get_byte!(bms.cell_volts(6), 0),
+        get_byte!(bms.cell_volts(6), 1),
+        get_byte!(bms.cell_volts(7), 0),
+        get_byte!(bms.cell_volts(7), 1)
+    ];
+
+    let frame_send = CanFrame::new(CanMsg::Tech2.as_raw(), &can_second);
+    match can.write(&frame_send).await {
+        Ok(_) => {}
+        
+
+        Err(CanError::Timeout) => {
+            //info!("Timeout Can connection");
+            return Err(CanError::Timeout);
+        }
+
+        Err(_) => {
+            //info!("Can tech write error");
+            return Err(CanError::WriteError);
+        }
+    }
+
+    let can_third = [
+        get_byte!(bms.cell_volts(8), 0),
+        get_byte!(bms.cell_volts(8), 1),
+        get_byte!(bms.cell_volts(9), 0),
+        get_byte!(bms.cell_volts(9), 1),
+        get_byte!(bms.cell_volts(10), 0),
+        get_byte!(bms.cell_volts(10), 1),
+        get_byte!(bms.cell_volts(11), 0),
+        get_byte!(bms.cell_volts(11), 1)
+    ];
+
+    let frame_send = CanFrame::new(CanMsg::Tech3.as_raw(), &can_third);
+    match can.write(&frame_send).await {
+        Ok(_) => {
+            Ok(())
+        }
+
+        Err(CanError::Timeout) => {
+            //info!("Timeout Can tech connection");
+            return Err(CanError::Timeout);
+        }
+
+        Err(_) => {
+            //info!("Can tech write error");
             return Err(CanError::WriteError);
         }
     }

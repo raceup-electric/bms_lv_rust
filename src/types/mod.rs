@@ -7,7 +7,11 @@ pub enum CanMsg {
     VoltageId = 0x54,
     TemperatureId = 0x55,
     Balancing = 0x1A4,
-    ErrorId = 0x14
+    ErrorId = 0x14,
+    Tech = 0x365,
+    Tech1 = 0x366,
+    Tech2 = 0x367,
+    Tech3 = 0x368 
 }
 
 impl CanMsg {
