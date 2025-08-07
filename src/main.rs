@@ -224,7 +224,6 @@ async fn read_can(
             }
             Err(_) => {
                 drop(can_data);
-                // //info!("No messages");
             }
         }
         embassy_time::Timer::after_micros(50).await;
@@ -247,13 +246,11 @@ async fn ltc_function(
     let mut first_close = false;
 
     loop {
-        info!("1");
-
         let mut ltc_data = ltc.lock().await;
 
         match ltc_data.update().await {
             Ok(_) => {
-                //info!("Battery Reading okay");
+                info!("Battery Reading okay");
             },
             Err(_) => {
                 defmt::error!("Failed to update battery data");
@@ -267,7 +264,7 @@ async fn ltc_function(
             for _ in 0..5 {
                 match ltc_data.update().await {
                     Ok(_) => {
-                        //info!("Battery Reading okay");
+                        info!("Battery Reading okay");
                     },
                     Err(_) => {
                         defmt::error!("Failed to update battery data");
@@ -277,10 +274,8 @@ async fn ltc_function(
         }
 
         drop(ltc_data);
-        info!("2");
 
         let bms_data = bms.lock().await;
-        info!("3");
         if &bms_data.min_volt() < &VOLTAGES::MINVOLTAGE.as_raw() || &bms_data.max_volt() > &VOLTAGES::MAXVOLTAGE.as_raw(){
             if embassy_time::Instant::now().as_millis() - time_now > 450 {
                 err_check_close = false;
@@ -304,8 +299,6 @@ async fn ltc_function(
             info!("Cell {}: {} mV", i, roundf(bms_data.cell_volts(i) as f32 /10f32));
         }
         drop(bms_data);
-        
-        info!("3");
 
         let mut err_check_data = err_check.lock().await;
         if err_check_close {
@@ -341,7 +334,6 @@ async fn ltc_function(
         }
         drop(err_check_data);
 
-        info!("4");
         
         let mut is_balance_data = is_balance.lock().await;
         let balance: bool = *is_balance_data;
