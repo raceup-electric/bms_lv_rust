@@ -12,7 +12,7 @@ use embassy_stm32::peripherals::ADC1;
 
 
 use crate::usb_serial::usb::Serial;
-use crate::{can_management::{CanError, CanFrame}, ltc_management::ltc6811::MODE, types::_TEMPERATURES};
+use crate::{can_management::{CanError, CanFrame}, ltc_management::ltc6811::MODE};
 
 use defmt::info;
 // use panic_probe as _;
@@ -22,7 +22,7 @@ mod can_management;
 mod ltc_management;
 mod usb_serial;
 
-use types::{CanMsg, VOLTAGES, SLAVEBMS};
+use types::{CanMsg, VOLTAGES, SLAVEBMS, TEMPERATURES};
 use can_management::{can_operation, can_operation_tech, CanController};
 use ltc_management::{SpiDevice, LTC6811};
 use usb_serial::prepare_config;
@@ -291,7 +291,7 @@ async fn ltc_function(
             time_err_volt = embassy_time::Instant::now().as_millis();
         }
 
-        if &bms_data.min_temp() < &_TEMPERATURES::_MINTEMP._as_raw() || &bms_data.max_temp() > &_TEMPERATURES::_MAXTEMP._as_raw() {
+        if &bms_data.min_temp() < &TEMPERATURES::MINTEMP._as_raw() || &bms_data.max_temp() > &TEMPERATURES::MAXTEMP._as_raw() {
             if embassy_time::Instant::now().as_millis() - time_err_temp > 450 {
                 temp_led.set_high();
             }
