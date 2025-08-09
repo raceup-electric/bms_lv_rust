@@ -5,10 +5,11 @@ use libm::roundf;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::adc::{Adc, Resolution};
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use static_cell::StaticCell;
 use embassy_stm32::peripherals::ADC1;
+
 
 use crate::usb_serial::usb::Serial;
 use crate::{can_management::{CanError, CanFrame}, ltc_management::ltc6811::MODE, types::_TEMPERATURES};
@@ -26,16 +27,19 @@ use can_management::{can_operation, can_operation_tech, CanController};
 use ltc_management::{SpiDevice, LTC6811};
 use usb_serial::prepare_config;
 
-static BMS: StaticCell<Mutex<NoopRawMutex, SLAVEBMS>> = StaticCell::new();
-static ERR_CHECK: StaticCell<Mutex<NoopRawMutex, Output>> = StaticCell::new();
-static CAN: StaticCell<Mutex<NoopRawMutex, CanController>> = StaticCell::new();
-static SPI: StaticCell<Mutex<NoopRawMutex, SpiDevice>> = StaticCell::new();
-static LTC: StaticCell<Mutex<NoopRawMutex, LTC6811>> = StaticCell::new();
-static IS_BALANCE: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
-static IS_TECH: StaticCell<Mutex<NoopRawMutex, bool>> = StaticCell::new();
+static BMS: StaticCell<Mutex<CriticalSectionRawMutex, SLAVEBMS>> = StaticCell::new();
+static ERR_CHECK: StaticCell<Mutex<CriticalSectionRawMutex, Output>> = StaticCell::new();
+static CAN: StaticCell<Mutex<CriticalSectionRawMutex, CanController>> = StaticCell::new();
+static SPI: StaticCell<Mutex<CriticalSectionRawMutex, SpiDevice>> = StaticCell::new();
+static LTC: StaticCell<Mutex<CriticalSectionRawMutex, LTC6811>> = StaticCell::new();
+static IS_BALANCE: StaticCell<Mutex<CriticalSectionRawMutex, bool>> = StaticCell::new();
+static IS_TECH: StaticCell<Mutex<CriticalSectionRawMutex, bool>> = StaticCell::new();
+
+// static TEMP_HC: StaticCell<Mutex<CriticalSectionRawMutex, [u16; 2]>> = StaticCell::new();
 
 
 const VOLTAGE_OFFSET: f32 = 1650f32; //mV
+
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
@@ -105,9 +109,9 @@ fn setup_bms() -> SLAVEBMS{
 
 #[embassy_executor::task]
 async fn current_sense(
-    mut adc: embassy_stm32::adc::Adc<'static, ADC1, >,
+    mut adc: embassy_stm32::adc::Adc<'static, ADC1>,
     mut curr_pin: embassy_stm32::peripherals::PA1,
-    bms: &'static Mutex<NoopRawMutex, SLAVEBMS>
+    bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>
 ) {
     adc.set_resolution(Resolution::BITS12);
     embassy_time::Timer::after_millis(100).await;
@@ -149,11 +153,10 @@ async fn current_sense(
 
 #[embassy_executor::task]
 async fn send_can(
-    bms: &'static Mutex<NoopRawMutex, SLAVEBMS>, 
-    can: &'static Mutex<NoopRawMutex, CanController<'static>>,
-    is_tech: &'static Mutex<NoopRawMutex, bool>
+    bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>, 
+    can: &'static Mutex<CriticalSectionRawMutex, CanController<'static>>,
+    is_tech: &'static Mutex<CriticalSectionRawMutex, bool>
 ){
-    // let mut err_count: u16 = 0;
     loop {
         let bms_data = bms.lock().await;
         let mut can_data = can.lock().await;
@@ -186,9 +189,9 @@ async fn send_can(
 
 #[embassy_executor::task]
 async fn read_can(
-    is_balance: &'static Mutex<NoopRawMutex, bool>,
-    can: &'static Mutex<NoopRawMutex, CanController<'static>>,
-    is_tech: &'static Mutex<NoopRawMutex, bool>
+    is_balance: &'static Mutex<CriticalSectionRawMutex, bool>,
+    can: &'static Mutex<CriticalSectionRawMutex, CanController<'static>>,
+    is_tech: &'static Mutex<CriticalSectionRawMutex, bool>
 ){
     loop {
         let mut can_data = can.lock().await;
@@ -232,17 +235,19 @@ async fn read_can(
 
 #[embassy_executor::task]
 async fn ltc_function(
-    bms: &'static Mutex<NoopRawMutex, SLAVEBMS>, 
-    ltc: &'static Mutex<NoopRawMutex, LTC6811>,
-    err_check: &'static Mutex<NoopRawMutex, Output<'static>>,
-    can: &'static Mutex<NoopRawMutex, CanController<'static>>,
+    bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>, 
+    ltc: &'static Mutex<CriticalSectionRawMutex, LTC6811>,
+    err_check: &'static Mutex<CriticalSectionRawMutex, Output<'static>>,
+    can: &'static Mutex<CriticalSectionRawMutex, CanController<'static>>,
     mut debug_led: Output<'static>,
     mut voltage_led: Output<'static>,
     mut temp_led: Output<'static>,
-    is_balance: &'static Mutex<NoopRawMutex, bool>
+    is_balance: &'static Mutex<CriticalSectionRawMutex, bool>
 ) {
-    let mut err_check_close = false;
-    let mut time_now = embassy_time::Instant::now().as_millis();
+    let mut time_err_volt = embassy_time::Instant::now().as_millis();
+    let mut time_err_temp = embassy_time::Instant::now().as_millis();
+    let mut fault_temp: bool = false;
+    let mut fault_volt: bool = false;
     let mut first_close = false;
 
     loop {
@@ -277,31 +282,35 @@ async fn ltc_function(
 
         let bms_data = bms.lock().await;
         if &bms_data.min_volt() < &VOLTAGES::MINVOLTAGE.as_raw() || &bms_data.max_volt() > &VOLTAGES::MAXVOLTAGE.as_raw(){
-            if embassy_time::Instant::now().as_millis() - time_now > 450 {
-                err_check_close = false;
-                
+            if embassy_time::Instant::now().as_millis() - time_err_volt > 450 {
+                voltage_led.set_high();
             }
         } else {
-            err_check_close = true;
+            fault_volt = true;
             first_close = true;
-            time_now = embassy_time::Instant::now().as_millis();
+            time_err_volt = embassy_time::Instant::now().as_millis();
         }
 
         if &bms_data.min_temp() < &_TEMPERATURES::_MINTEMP._as_raw() || &bms_data.max_temp() > &_TEMPERATURES::_MAXTEMP._as_raw() {
-            if embassy_time::Instant::now().as_millis() > 2000 { 
+            if embassy_time::Instant::now().as_millis() - time_err_temp > 450 {
                 temp_led.set_high();
             }
         } else {
+            fault_temp = true;
+            first_close = true;
+            time_err_temp = embassy_time::Instant::now().as_millis();
             temp_led.set_low();
         }
 
         for i in 0..12 {
             info!("Cell {}: {} mV", i, roundf(bms_data.cell_volts(i) as f32 /10f32));
+            embassy_time::Timer::after_millis(1).await;
         }
+        embassy_time::Timer::after_millis(2).await;
         drop(bms_data);
 
         let mut err_check_data = err_check.lock().await;
-        if err_check_close {
+        if !(fault_temp || fault_volt) {
             if embassy_time::Instant::now().as_millis() > 1000 {
                 err_check_data.set_high();
             }
@@ -309,7 +318,6 @@ async fn ltc_function(
         } else {
             err_check_data.set_low();
             if embassy_time::Instant::now().as_millis() > 2000 || first_close {
-                voltage_led.set_high();
                 debug_led.toggle();
                 let mut can_data = can.lock().await;
                 let can_second = [
@@ -357,5 +365,3 @@ async fn ltc_function(
         embassy_time::Timer::after_millis(5).await;
     }
 } 
-
-

@@ -2,7 +2,8 @@
 
 use super::spi_device::SpiDevice;
 use crate::types::{bms::SLAVEBMS, VOLTAGES};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use defmt::info;
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 
 use libm::{roundf, logf}; // libm helper functions
@@ -38,7 +39,7 @@ pub const RDAUXB: [u8; 2] = [0x00, 0x0E];
 pub const ADCV: [u8; 2] = [0x02, 0x60];
 
 /// Start Temperature Converstion
-pub const ADAX: [u8; 2] = [0x05, 0x60];
+pub const ADAX: [u8; 2] = [0x04, 0x80];
 
 /// Polling Completed Temperature Conversion
 pub const PLADC: [u8; 2] = [0x7, 0x14];
@@ -65,7 +66,7 @@ const BAL_EPSILON: i16 = 50; // allowable voltage difference for balancing
 
 // Configuration
 const NUM_CELLS: usize = 12;
-const REFON: u8 = 0x01; // Reference Powered Up
+const REFON: u8 = 0x01 << 2;// Reference Powered Up
 const ADCOPT: u8 = 0x00; // ADC Mode option bit
                          // GPIO configuration bits if needed
 const GPIO1: u8 = 0x01; // GPIO1 as digital input
@@ -109,31 +110,39 @@ pub enum MODE {
 
 // LTC6811 Management structure
 pub struct LTC6811 {
-    spi: &'static Mutex<NoopRawMutex, SpiDevice<'static>>,
-    bms: &'static Mutex<NoopRawMutex, SLAVEBMS>,
+    spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
+    bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>,
     config: [u8; 6], // Configuration registers
-    mode: MODE
+    mode: MODE,
+    prev_mode: MODE
 }
-
 impl LTC6811 {
     pub async fn new(
-        spi: &'static Mutex<NoopRawMutex, SpiDevice<'static>>,
-        bms: &'static Mutex<NoopRawMutex, SLAVEBMS>,
+        spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
+        bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>,
     ) -> Self {
         // Initialize with default configuration
-        // CFGR0: ADCOPT | GPIO[5:1]
-        // CFGR1: Reserved | Reserved
-        // CFGR2: REFON | Reserved
+        // CFGR0: GPIO[5:1] | ADCOPT | REFON
+        // CFGR1: Reserved
+        // CFGR2: will be set in init_cfg() (OV/UV bits only)
         // CFGR3: Reserved
-        // CFGR4: Cell discharge timer and under-voltage comparison enable
-        // CFGR5: Cell discharge timer and over-voltage comparison enable
-        let config = [0x00, 0x00, REFON, 0x00, 0x00, 0x00];
+        // CFGR4: discharge under-voltage / timer
+        // CFGR5: discharge over-voltage / timer
+        let config = [
+            GPIOS | ADCOPT | REFON, // CFGR0: enable VREF permanently
+            0x00,                   // CFGR1
+            0x00,                   // CFGR2 (OV/UV packed later)
+            0x00,                   // CFGR3
+            0x00,                   // CFGR4
+            0x00,                   // CFGR5
+        ];
 
         LTC6811 {
             spi,
             bms,
             config,
-            mode: MODE::NORMAL
+            mode: MODE::NORMAL,
+            prev_mode: MODE::NORMAL,
         }
     }
 
@@ -153,9 +162,12 @@ impl LTC6811 {
     }
 
     pub async fn set_mode(&mut self, mode: MODE) {
-        self.mode = mode;
+        self.mode = mode.clone();
+        if self.prev_mode != mode {
+            let _ = self.init_cfg().await;
+            self.prev_mode = mode;
+        }
         
-        let _ = self.init_cfg().await;
     }
 
 
@@ -170,7 +182,7 @@ impl LTC6811 {
         let uv_val = (VOLTAGES::MINVOLTAGE.as_raw() / 16) - 1;
         let ov_val = VOLTAGES::MAXVOLTAGE.as_raw() / 16;
 
-        self.config[0] = GPIOS | ADCOPT;
+        self.config[0] = GPIOS | ADCOPT | REFON;
         self.config[1] = (uv_val & 0xFF) as u8;
         self.config[2] = (((ov_val & 0xF) << 4) | ((uv_val & 0xF00) >> 8)) as u8;
         self.config[3] = (ov_val >> 4) as u8;
@@ -370,14 +382,26 @@ impl LTC6811 {
 
     pub async fn start_temperature_conversion(&mut self) -> Result<(), ()> {
         let cmd = self.prepare_command(ADAX);
-        self.wakeup_idle().await;
+        self.wakeup().await;
         let mut spi_data = self.spi.lock().await;
         // Send command
         spi_data.write(&cmd).await;
-
         drop(spi_data);
+
+        Timer::after_millis(1).await;
+
         // Wait for conversion to complete (typical conversion time ~2ms)
-        Timer::after(Duration::from_millis(10)).await;
+        let poll = self.prepare_command(PLADC);
+        loop {
+            let mut spi_data = self.spi.lock().await;
+            let mut status = [0u8; 8];
+            spi_data.cmd_read(&poll, &mut status).await.unwrap();
+            if status[0] & 0x01 != 0 { break }
+            drop(spi_data);
+            Timer::after(Duration::from_micros(500)).await;
+        }
+
+        Timer::after_millis(1).await;
 
         Ok(())
     }
@@ -416,18 +440,24 @@ impl LTC6811 {
 
         // 5) extract the four raw ADC codes
         let codes = [
-            u16::from_be_bytes([auxa[0], auxa[1]]), // GPIO1
-            u16::from_be_bytes([auxa[2], auxa[3]]), // GPIO2
-            u16::from_be_bytes([auxa[4], auxa[5]]), // GPIO3
-            u16::from_be_bytes([auxb[0], auxb[1]]), // GPIO4
+            u16::from_be_bytes([auxa[1], auxa[0]]), // GPIO1
+            u16::from_be_bytes([auxa[3], auxa[2]]), // GPIO2
+            u16::from_be_bytes([auxa[5], auxa[4]]), // GPIO3
+            u16::from_be_bytes([auxb[1], auxb[0]]), // GPIO4
         ];
 
-        let voltage_ref = u16::from_be_bytes([auxb[4], auxb[5]]);
+        for (i, &code) in codes.iter().enumerate() {
+            info!("Voltage temp {}: {}", i, code);
+        }
+
+        let voltage_ref = u16::from_be_bytes([auxb[5], auxb[4]]);
+        info!("Reference: {}", voltage_ref);
 
         // 6) update your BMS struct
         let mut bms = self.bms.lock().await;
         for (i, &code) in codes.iter().enumerate() {
             bms.update_temp(i, self.parse_temp(code, voltage_ref));
+            info!("Temperature {}: {} C", i, self.parse_temp(code, voltage_ref) as f32/10.0f32);
         }
         drop(bms);
         Ok(())
@@ -442,12 +472,12 @@ impl LTC6811 {
             Ok(_) => {}
             Err(_) => return Err(()),
         }
-
-        // Read temperature
+        
         match self.read_temperatures().await {
             Ok(_) => {},
             Err(_) => return Err(()),
         }
+
         let mut bms_data = self.bms.lock().await;
         bms_data.update();
         drop(bms_data);
@@ -460,7 +490,8 @@ impl LTC6811 {
         if voltage_gpio == 0 {
             return u16::MAX;
         }
-        let r_th = (RTHERMISTOR_OHM as f32)* (voltage_gpio as f32)*0.1 / ((voltage_gpio as f32)*0.1 + (((33000 as f32) * 0.1))); 
+
+        let r_th = (RTHERMISTOR_OHM as f32)* (voltage_gpio as f32)*0.1 / ((_voltage_ref as f32)*0.1 - (((voltage_gpio as f32) * 0.1))); 
 
         let inv_t = 1f32/(KELVIN_2_CELSIUS + 25f32) + (1f32/B_COEFF) * logf((r_th/1000f32) / R25);
         
@@ -478,7 +509,7 @@ impl LTC6811 {
             return MAX_TEMP;
         } else {
             temp_i32 as u16
-        }        
+        }       
     }
 
     pub async fn check_need_balance(&self) -> bool {
