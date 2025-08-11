@@ -243,10 +243,8 @@ async fn ltc_function(
     mut temp_led: Output<'static>,
     is_balance: &'static Mutex<CriticalSectionRawMutex, bool>
 ) {
-    let mut time_err_volt = embassy_time::Instant::now().as_millis();
-    let mut time_err_temp = embassy_time::Instant::now().as_millis();
-    let mut fault_temp: bool = false;
-    let mut fault_volt: bool = false;
+    let mut err_check_close = false;
+    let mut time_now = embassy_time::Instant::now().as_millis();
     let mut first_close = false;
 
     let mut time_send_log = embassy_time::Instant::now().as_millis();
@@ -283,26 +281,25 @@ async fn ltc_function(
 
         let bms_data = bms.lock().await;
         if &bms_data.min_volt() < &VOLTAGES::MINVOLTAGE.as_raw() || &bms_data.max_volt() > &VOLTAGES::MAXVOLTAGE.as_raw(){
-            if embassy_time::Instant::now().as_millis() - time_err_volt > 450 {
-                voltage_led.set_high();
+            if embassy_time::Instant::now().as_millis() - time_now > 450 {
+                err_check_close = false;
+                
             }
         } else {
-            fault_volt = true;
+            err_check_close = true;
             first_close = true;
-            time_err_volt = embassy_time::Instant::now().as_millis();
+            time_now = embassy_time::Instant::now().as_millis();
         }
 
         if &bms_data.min_temp() < &TEMPERATURES::MINTEMP._as_raw() || &bms_data.max_temp() > &TEMPERATURES::MAXTEMP._as_raw() {
-            if embassy_time::Instant::now().as_millis() - time_err_temp > 450 {
+            if embassy_time::Instant::now().as_millis() > 2000 { 
                 temp_led.set_high();
             }
         } else {
-            fault_temp = true;
-            first_close = true;
-            time_err_temp = embassy_time::Instant::now().as_millis();
             temp_led.set_low();
         }
 
+        
         if embassy_time::Instant::now().as_millis() - time_send_log > 1000 {
             for i in 0..12 {
                 info!("Cell {}: {} mV", i, roundf(bms_data.cell_volts(i) as f32 /10f32));
@@ -316,11 +313,10 @@ async fn ltc_function(
             embassy_time::Timer::after_millis(2).await;
             time_send_log = embassy_time::Instant::now().as_millis();
         }
-        
         drop(bms_data);
 
         let mut err_check_data = err_check.lock().await;
-        if !(fault_temp || fault_volt) {
+        if err_check_close {
             if embassy_time::Instant::now().as_millis() > 1000 {
                 err_check_data.set_high();
             }
@@ -328,6 +324,7 @@ async fn ltc_function(
         } else {
             err_check_data.set_low();
             if embassy_time::Instant::now().as_millis() > 2000 || first_close {
+                voltage_led.set_high();
                 debug_led.toggle();
                 let mut can_data = can.lock().await;
                 let can_second = [
@@ -339,11 +336,11 @@ async fn ltc_function(
                     Ok(_) => {}
 
                     Err(CanError::Timeout) => {
-                        // info!("Timeout Can connection");
+                        info!("Timeout Can connection");
                     }
 
                     Err(_) => {
-                        // info!("Can write error");
+                        info!("Can write error");
                     }
                 }
                 drop(can_data);
@@ -371,7 +368,10 @@ async fn ltc_function(
         }
 
         drop(is_balance_data);
-        // info!("ALIVE");
+        info!("ALIVE");
         embassy_time::Timer::after_millis(5).await;
     }
 } 
+
+
+
