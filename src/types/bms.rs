@@ -258,6 +258,10 @@ impl SLAVEBMS {
         self.bms_history[self.index].cell_volts[i]
     }
 
+    pub fn temps(&self, i: usize) -> u16 {
+        self.bms_history[self.index].temperatures[i]
+    }
+
     pub fn update_current(&mut self, value: i32) {
         self.current = value;
     }

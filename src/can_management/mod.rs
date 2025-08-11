@@ -146,6 +146,32 @@ pub async fn can_operation_tech(bms: &SLAVEBMS, can: &mut CanController<'_>) -> 
 
     let frame_send = CanFrame::new(CanMsg::Tech3.as_raw(), &can_third);
     match can.write(&frame_send).await {
+        Ok(_) => {}
+
+        Err(CanError::Timeout) => {
+            //info!("Timeout Can tech connection");
+            return Err(CanError::Timeout);
+        }
+
+        Err(_) => {
+            //info!("Can tech write error");
+            return Err(CanError::WriteError);
+        }
+    }
+
+    let can_fourth = [
+        get_byte!(bms.temps(0), 0),
+        get_byte!(bms.temps(0), 1),
+        get_byte!(bms.temps(1), 0),
+        get_byte!(bms.temps(1), 1),
+        get_byte!(bms.temps(2), 0),
+        get_byte!(bms.temps(2), 1),
+        get_byte!(bms.temps(3), 0),
+        get_byte!(bms.temps(3), 1),
+    ];
+
+    let frame_send = CanFrame::new(CanMsg::Tech4.as_raw(), &can_fourth);
+    match can.write(&frame_send).await {
         Ok(_) => {
             Ok(())
         }

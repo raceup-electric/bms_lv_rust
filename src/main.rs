@@ -98,7 +98,6 @@ async fn main(spawner: Spawner) -> ! {
 
     loop {
         embassy_time::Timer::after_millis(10000).await;
-        //info!("FINO A QUI");
     }
 }
 
@@ -250,6 +249,8 @@ async fn ltc_function(
     let mut fault_volt: bool = false;
     let mut first_close = false;
 
+    let mut time_send_log = embassy_time::Instant::now().as_millis();
+
     loop {
         let mut ltc_data = ltc.lock().await;
 
@@ -302,11 +303,20 @@ async fn ltc_function(
             temp_led.set_low();
         }
 
-        for i in 0..12 {
-            info!("Cell {}: {} mV", i, roundf(bms_data.cell_volts(i) as f32 /10f32));
-            embassy_time::Timer::after_millis(1).await;
+        if embassy_time::Instant::now().as_millis() - time_send_log > 1000 {
+            for i in 0..12 {
+                info!("Cell {}: {} mV", i, roundf(bms_data.cell_volts(i) as f32 /10f32));
+                embassy_time::Timer::after_millis(1).await;
+            }
+
+            for i in 0..4{
+                info!("Temp {}: {} C", i, roundf(bms_data.temps(i) as f32 /10f32));
+                embassy_time::Timer::after_millis(1).await;
+            }
+            embassy_time::Timer::after_millis(2).await;
+            time_send_log = embassy_time::Instant::now().as_millis();
         }
-        embassy_time::Timer::after_millis(2).await;
+        
         drop(bms_data);
 
         let mut err_check_data = err_check.lock().await;
@@ -329,11 +339,11 @@ async fn ltc_function(
                     Ok(_) => {}
 
                     Err(CanError::Timeout) => {
-                        info!("Timeout Can connection");
+                        // info!("Timeout Can connection");
                     }
 
                     Err(_) => {
-                        info!("Can write error");
+                        // info!("Can write error");
                     }
                 }
                 drop(can_data);
@@ -361,7 +371,7 @@ async fn ltc_function(
         }
 
         drop(is_balance_data);
-        info!("ALIVE");
+        // info!("ALIVE");
         embassy_time::Timer::after_millis(5).await;
     }
 } 
