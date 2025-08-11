@@ -2,7 +2,6 @@
 
 use super::spi_device::SpiDevice;
 use crate::types::{bms::SLAVEBMS, VOLTAGES};
-use defmt::info;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 
@@ -446,18 +445,12 @@ impl LTC6811 {
             u16::from_be_bytes([auxb[1], auxb[0]]), // GPIO4
         ];
 
-        for (i, &code) in codes.iter().enumerate() {
-            info!("Voltage temp {}: {}", i, code);
-        }
-
         let voltage_ref = u16::from_be_bytes([auxb[5], auxb[4]]);
-        info!("Reference: {}", voltage_ref);
 
         // 6) update your BMS struct
         let mut bms = self.bms.lock().await;
         for (i, &code) in codes.iter().enumerate() {
             bms.update_temp(i, self.parse_temp(code, voltage_ref));
-            info!("Temperature {}: {} C", i, self.parse_temp(code, voltage_ref) as f32/10.0f32);
         }
         drop(bms);
         Ok(())

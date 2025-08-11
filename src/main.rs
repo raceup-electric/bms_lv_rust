@@ -253,9 +253,7 @@ async fn ltc_function(
         let mut ltc_data = ltc.lock().await;
 
         match ltc_data.update().await {
-            Ok(_) => {
-                info!("Battery Reading okay");
-            },
+            Ok(_) => {},
             Err(_) => {
                 defmt::error!("Failed to update battery data");
             }
@@ -267,9 +265,7 @@ async fn ltc_function(
         if balance == true{
             for _ in 0..5 {
                 match ltc_data.update().await {
-                    Ok(_) => {
-                        info!("Battery Reading okay");
-                    },
+                    Ok(_) => {},
                     Err(_) => {
                         defmt::error!("Failed to update battery data");
                     }
@@ -336,11 +332,11 @@ async fn ltc_function(
                     Ok(_) => {}
 
                     Err(CanError::Timeout) => {
-                        info!("Timeout Can connection");
+                        // info!("Timeout Can connection");
                     }
 
                     Err(_) => {
-                        info!("Can write error");
+                        // info!("Can write error");
                     }
                 }
                 drop(can_data);
@@ -368,7 +364,6 @@ async fn ltc_function(
         }
 
         drop(is_balance_data);
-        info!("ALIVE");
         embassy_time::Timer::after_millis(5).await;
     }
 } 
