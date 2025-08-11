@@ -255,9 +255,7 @@ async fn ltc_function(
         let mut ltc_data = ltc.lock().await;
 
         match ltc_data.update().await {
-            Ok(_) => {
-                info!("Battery Reading okay");
-            },
+            Ok(_) => {},
             Err(_) => {
                 defmt::error!("Failed to update battery data");
             }
@@ -269,9 +267,7 @@ async fn ltc_function(
         if balance == true{
             for _ in 0..5 {
                 match ltc_data.update().await {
-                    Ok(_) => {
-                        info!("Battery Reading okay");
-                    },
+                    Ok(_) => {},
                     Err(_) => {
                         defmt::error!("Failed to update battery data");
                     }
