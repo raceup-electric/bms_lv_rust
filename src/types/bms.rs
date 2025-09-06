@@ -77,10 +77,7 @@ impl BMS {
         let mut tot_temp: u32 = 0;
         self.max_temp = 0;
         self.min_temp = u16::MAX;
-        for (i, &temp) in self.temperatures.iter().enumerate() {
-            if i == 0 {
-                continue;
-            }
+        for &temp in self.temperatures.iter() {
             tot_temp = tot_temp.wrapping_add(temp as u32);
             self.max_temp = if temp > self.max_temp {temp} else {self.max_temp};
             self.min_temp = if temp < self.min_temp {temp} else {self.min_temp};

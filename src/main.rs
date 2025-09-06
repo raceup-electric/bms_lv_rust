@@ -281,9 +281,10 @@ async fn ltc_function(
         if &bms_data.min_volt() < &VOLTAGES::MINVOLTAGE.as_raw() || &bms_data.max_volt() > &VOLTAGES::MAXVOLTAGE.as_raw(){
             if embassy_time::Instant::now().as_millis() - time_err_volt > 450 {
                 voltage_led.set_high();
+                fault_volt = true;
             }
         } else {
-            fault_volt = true;
+            fault_volt = false;
             first_close = true;
             time_err_volt = embassy_time::Instant::now().as_millis();
         }
@@ -291,9 +292,10 @@ async fn ltc_function(
         if &bms_data.min_temp() < &TEMPERATURES::MINTEMP._as_raw() || &bms_data.max_temp() > &TEMPERATURES::MAXTEMP._as_raw() {
             if embassy_time::Instant::now().as_millis() - time_err_temp > 450 {
                 temp_led.set_high();
+                fault_temp = false;
             }
         } else {
-            fault_temp = true;
+            fault_temp = false;
             first_close = true;
             time_err_temp = embassy_time::Instant::now().as_millis();
             temp_led.set_low();
@@ -309,6 +311,8 @@ async fn ltc_function(
                 info!("Temp {}: {} C", i, roundf(bms_data.temps(i) as f32 /10f32));
                 embassy_time::Timer::after_millis(1).await;
             }
+
+            info!("Fault Temp: {}\nFault Cells: {}", if fault_temp {"YES"} else {"NO"}, if fault_volt {"YES"} else {"NO"});
             embassy_time::Timer::after_millis(2).await;
             time_send_log = embassy_time::Instant::now().as_millis();
         }

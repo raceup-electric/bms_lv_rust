@@ -162,7 +162,7 @@ impl LTC6811 {
 
     pub async fn set_mode(&mut self, mode: MODE) {
         self.mode = mode.clone();
-        if self.prev_mode != mode {
+        if self.prev_mode != mode || mode == MODE::BALANCING{
             let _ = self.init_cfg().await;
             self.prev_mode = mode;
         }
@@ -518,5 +518,18 @@ impl LTC6811 {
         }
         false
     }
+
+    // pub async fn wait_poll(&mut self) {
+    //     self.wakeup_idle().await;
+    //     let mut spi_data = self.spi.lock().await;
+
+    //     // Read voltage registers (cells 1-3)
+    //     let cmd_a = self.prepare_command(RDCFGA);
+    //     let mut data_a = [0u8; 8]; // 6 data bytes + 2 PEC bytes
+    //                                // spi_data.write(&cmd_a).await;
+    //                                // self.transfer_ltc(&mut spi_data, &mut data_a).await;
+    //     spi_data.cmd_read(&cmd_a, &mut data_a).await.unwrap();
+        
+    // }
 
 }

@@ -37,8 +37,8 @@ impl VOLTAGES {
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TEMPERATURES {
-    MAXTEMP = 600,
-    MINTEMP = 100
+    MAXTEMP = 65000,
+    MINTEMP = 0
 }
 
 impl TEMPERATURES {

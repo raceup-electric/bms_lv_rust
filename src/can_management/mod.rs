@@ -144,6 +144,8 @@ pub async fn can_operation_tech(bms: &SLAVEBMS, can: &mut CanController<'_>) -> 
         get_byte!(bms.cell_volts(11), 1)
     ];
 
+    embassy_time::Timer::after_millis(10).await;
+
     let frame_send = CanFrame::new(CanMsg::Tech3.as_raw(), &can_third);
     match can.write(&frame_send).await {
         Ok(_) => {}
