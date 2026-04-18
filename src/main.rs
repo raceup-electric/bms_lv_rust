@@ -66,7 +66,7 @@ async fn main(spawner: Spawner) -> ! {
     let is_balance_mutex = Mutex::new(is_balance);
     let is_balance = StaticCell::init(&IS_BALANCE, is_balance_mutex);
 
-    let is_tech = false;
+    let is_tech = true;
     let is_tech_mutex = Mutex::new(is_tech);
     let is_tech = StaticCell::init(&IS_TECH, is_tech_mutex);
 
