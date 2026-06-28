@@ -1,3 +1,13 @@
+//! CAN communication layer.
+//!
+//! Re-exports the [`CanController`], [`CanFrame`] and [`CanError`] types and
+//! provides the helper routines that pack the battery state into CAN frames:
+//!
+//! * [`can_operation`] sends the two summary frames (voltages, then
+//!   temperatures + current).
+//! * [`can_operation_tech`] sends four extended frames carrying every cell
+//!   voltage and every thermistor temperature.
+
 pub mod can_controller;
 pub mod frame;
 use crate::types::SLAVEBMS;
@@ -6,6 +16,10 @@ pub use can_controller::CanController;
 pub use can_controller::CanError;
 pub use frame::CanFrame;
 
+/// Extracts a single byte from an integer, or from a slice by index.
+///
+/// * `get_byte!(value, n)` returns byte `n` (little-endian) of `value`.
+/// * `get_byte!(array, n, slice)` returns `array[n]`, or `0` if out of range.
 #[macro_export]
 macro_rules! get_byte {
     ($value:expr, $byte_num:expr) => {
@@ -17,10 +31,16 @@ macro_rules! get_byte {
     };
 }
 
+/// Sends the two summary frames describing the pack state.
+///
+/// Frame [`CanMsg::VoltageId`] carries max/min/avg cell voltage and the total
+/// pack voltage (scaled by 1/100). Frame [`CanMsg::TemperatureId`] carries
+/// max/min temperature and the 32-bit pack current.
 pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Result<(), CanError>{
     let tot_v = (bms.tot_volt()/100) as u16;
     static mut TEMP: usize = 0 as usize;
     unsafe {
+        // Pack voltage summary into 8 bytes (little-endian u16 fields).
         let can_first: [u8; 8] = [
             get_byte!(bms.max_volt(), 0),
             get_byte!(bms.max_volt(), 1),
@@ -51,6 +71,7 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Resul
         }
     }
 
+    // Temperature summary + 32-bit current.
     let can_second = [
         get_byte!(bms.max_temp(), 0),
         get_byte!(bms.max_temp(), 1),
@@ -80,7 +101,13 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Resul
 
 
 
+/// Sends the extended per-cell telemetry (four frames).
+///
+/// `Tech1`/`Tech2`/`Tech3` carry cells 1-4, 5-8 and 9-12 respectively; `Tech4`
+/// carries the four thermistor temperatures. Each value is a little-endian
+/// `u16`.
 pub async fn can_operation_tech(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Result<(), CanError>{
+    // Cells 1-4.
     let can_first: [u8; 8] = [
         get_byte!(bms.cell_volts(0), 0),
         get_byte!(bms.cell_volts(0), 1),
@@ -106,6 +133,7 @@ pub async fn can_operation_tech(bms: &SLAVEBMS, can: &mut CanController<'_>) -> 
         }
     }
 
+    // Cells 5-8.
     let can_second = [
         get_byte!(bms.cell_volts(4), 0),
         get_byte!(bms.cell_volts(4), 1),
@@ -120,7 +148,7 @@ pub async fn can_operation_tech(bms: &SLAVEBMS, can: &mut CanController<'_>) -> 
     let frame_send = CanFrame::new(CanMsg::Tech2.as_raw(), &can_second);
     match can.write(&frame_send).await {
         Ok(_) => {}
-        
+
 
         Err(CanError::Timeout) => {
             //info!("Timeout Can connection");
@@ -133,6 +161,7 @@ pub async fn can_operation_tech(bms: &SLAVEBMS, can: &mut CanController<'_>) -> 
         }
     }
 
+    // Cells 9-12.
     let can_third = [
         get_byte!(bms.cell_volts(8), 0),
         get_byte!(bms.cell_volts(8), 1),
@@ -161,6 +190,7 @@ pub async fn can_operation_tech(bms: &SLAVEBMS, can: &mut CanController<'_>) -> 
         }
     }
 
+    // Thermistor temperatures.
     let can_fourth = [
         get_byte!(bms.temps(0), 0),
         get_byte!(bms.temps(0), 1),
