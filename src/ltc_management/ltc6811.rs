@@ -1,3 +1,14 @@
+//! LTC6811 driver.
+//!
+//! Implements the command protocol of the Analog Devices LTC6811 12-cell
+//! battery monitor over SPI: configuration register access, cell-voltage and
+//! auxiliary (thermistor) conversions and readback, the 15-bit PEC used to
+//! protect every transfer, NTC linearisation, and passive cell balancing via
+//! the on-chip discharge switches.
+//!
+//! All multi-byte exchanges are validated/produced with [`LTC6811::calculate_pec`]
+//! and most read operations go through [`SpiDevice::cmd_read`].
+
 // IMPORT
 
 use super::spi_device::SpiDevice;
@@ -5,7 +16,7 @@ use crate::types::{bms::SLAVEBMS, VOLTAGES};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 
-use libm::{roundf, logf}; // libm helper functions
+use libm::{logf, roundf}; // libm helper functions
 
 /*
     Command codes from LTC6811 datasheet
@@ -43,38 +54,45 @@ pub const ADAX: [u8; 2] = [0x04, 0x80];
 /// Polling Completed Temperature Conversion
 pub const PLADC: [u8; 2] = [0x7, 0x14];
 
-
 /*
     Various constants
 */
-/// Resistance in ohm of 
+/// Thermistor series resistance, in ohms.
 const RTHERMISTOR_OHM: u32 = 22_000;
 
+/// Thermistor nominal resistance at 25 °C (kΩ), used by the Beta equation.
 const R25: f32 = 9.914;
 
-// Coefficiente Beta del termistore (in Kelvin)
-const B_COEFF: f32     = 3435.0;
-// Conversione da Kelvin a Celsius
+/// Thermistor Beta coefficient, in Kelvin.
+const B_COEFF: f32 = 3435.0;
+/// Kelvin-to-Celsius offset.
 const KELVIN_2_CELSIUS: f32 = 273.15;
 
-// Valori speciali di saturazione / guasto
-const MAX_TEMP: u16 = u16::MAX;  // OverTemp (corto a massa)
-const MIN_TEMP: u16 = 0;      
-// Thresholds and balancing parameters (example values – adjust as required)\
-const BAL_EPSILON: i16 = 50; // allowable voltage difference for balancing
+// Special saturation / fault values.
+/// Returned on over-temperature (sensor shorted to ground).
+const MAX_TEMP: u16 = u16::MAX;
+/// Returned on under-temperature / open sensor.
+const MIN_TEMP: u16 = 0;
+/// Voltage margin (0.1 mV units) above the pack minimum that triggers balancing.
+const BAL_EPSILON: i16 = 50;
 
 // Configuration
+/// Cells monitored by this LTC6811.
 const NUM_CELLS: usize = 12;
-const REFON: u8 = 0x01 << 2;// Reference Powered Up
-const ADCOPT: u8 = 0x00; // ADC Mode option bit
-                         // GPIO configuration bits if needed
-const GPIO1: u8 = 0x01; // GPIO1 as digital input
-const GPIO2: u8 = 0x01; // GPIO2 as digital input
-const GPIO3: u8 = 0x01; // GPIO3 as digital input
-const GPIO4: u8 = 0x01; // GPIO4 as digital input
-const GPIO5: u8 = 0x00; // GPIO5 as digital input
-const GPIOS: u8 = 0x0 | (GPIO1 << 3) | (GPIO2 << 4) | (GPIO3 << 5) | (GPIO4 << 6) | (GPIO5 << 7);
+/// Reference-powered-up bit (keeps the on-chip reference enabled).
+const REFON: u8 = 0x01 << 2;
+/// ADC mode option bit.
+const ADCOPT: u8 = 0x00;
+// GPIO pull-down configuration bits (GPIO1-4 used for thermistors).
+const GPIO1: u8 = 0x01;
+const GPIO2: u8 = 0x01;
+const GPIO3: u8 = 0x01;
+const GPIO4: u8 = 0x01;
+const GPIO5: u8 = 0x00;
+/// Packed GPIO bits for configuration register byte 0.
+const GPIOS: u8 = (GPIO1 << 3) | (GPIO2 << 4) | (GPIO3 << 5) | (GPIO4 << 6) | (GPIO5 << 7);
 
+/// Precomputed CRC15 lookup table for the LTC6811 PEC.
 #[allow(unused)]
 const CRC15_TABLE: [u16; 256] = [
     0x0, 0xc599, 0xceab, 0xb32, 0xd8cf, 0x1d56, 0x1664, 0xd3fd, 0xf407, 0x319e, 0x3aac, 0xff35,
@@ -101,21 +119,27 @@ const CRC15_TABLE: [u16; 256] = [
     0x8ba7, 0x4e3e, 0x450c, 0x8095,
 ];
 
+/// LTC6811 operating mode.
 #[derive(Debug, PartialEq, Clone)]
-pub enum MODE {
+pub enum Mode {
+    /// Normal monitoring, no discharge.
     NORMAL,
+    /// Passive balancing: cells above the minimum are discharged.
     BALANCING,
 }
 
-// LTC6811 Management structure
+/// High-level LTC6811 driver bound to a shared SPI bus and battery model.
 pub struct LTC6811 {
     spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
     bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>,
     config: [u8; 6], // Configuration registers
-    mode: MODE,
-    prev_mode: MODE
+    mode: Mode,
+    prev_mode: Mode,
 }
 impl LTC6811 {
+    /// Creates a driver with a default configuration (reference enabled, GPIO
+    /// pull-downs set, no discharge). OV/UV limits are programmed later in
+    /// [`LTC6811::init_cfg`].
     pub async fn new(
         spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
         bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>,
@@ -140,12 +164,15 @@ impl LTC6811 {
             spi,
             bms,
             config,
-            mode: MODE::NORMAL,
-            prev_mode: MODE::NORMAL,
+            mode: Mode::NORMAL,
+            prev_mode: Mode::NORMAL,
         }
     }
 
-    // Calculate PEC (CRC) for LTC6811 communication
+    /// Computes the 15-bit PEC (packet error code) over `data`.
+    ///
+    /// Returns the two PEC bytes (MSB first) appended to every command/data
+    /// packet exchanged with the LTC6811.
     pub fn calculate_pec(&self, data: &[u8]) -> [u8; 2] {
         let mut remainder: u16 = 16;
 
@@ -160,16 +187,17 @@ impl LTC6811 {
         [(remainder >> 8) as u8, remainder as u8]
     }
 
-    pub async fn set_mode(&mut self, mode: MODE) {
+    /// Switches operating mode, re-writing the configuration when the mode
+    /// changes (and on every balancing refresh so discharge bits are updated).
+    pub async fn set_mode(&mut self, mode: Mode) {
         self.mode = mode.clone();
-        if self.prev_mode != mode || mode == MODE::BALANCING{
+        if self.prev_mode != mode || mode == Mode::BALANCING {
             let _ = self.init_cfg().await;
             self.prev_mode = mode;
         }
-        
     }
 
-
+    /// Prepends a command with its PEC, producing the 4-byte command word.
     fn prepare_command(&self, cmd: [u8; 2]) -> [u8; 4] {
         let mut cmd_f = [0u8; 4];
         cmd_f[0..2].copy_from_slice(&cmd);
@@ -177,6 +205,11 @@ impl LTC6811 {
         cmd_f
     }
 
+    /// Builds the configuration registers and writes them to the chip.
+    ///
+    /// Programs the over/under-voltage comparison thresholds from [`VOLTAGES`]
+    /// and, in balancing mode, sets the discharge bits for every cell that sits
+    /// more than [`BAL_EPSILON`] above the pack minimum.
     pub async fn init_cfg(&mut self) -> Result<(), ()> {
         let uv_val = (VOLTAGES::MINVOLTAGE.as_raw() / 16) - 1;
         let ov_val = VOLTAGES::MAXVOLTAGE.as_raw() / 16;
@@ -188,19 +221,17 @@ impl LTC6811 {
         {
             let bms_data = self.bms.lock().await;
             // Assume bms_data.min_volt and bms_data.max_volt are set when valid.
-            if self.mode == MODE::BALANCING && bms_data.min_volt() != 0 && bms_data.max_volt() != 0
+            if self.mode == Mode::BALANCING && bms_data.min_volt() != 0 && bms_data.max_volt() != 0
             {
                 let mut discharge_bitmap: u16 = 0;
                 // Iterate over all 12 cells. Here we assume that bms_data.cell_volts is an array of 12 u16.
                 for i in 0..NUM_CELLS {
                     // If the cell voltage exceeds the minimum by more than BAL_EPSILON, enable discharge.
-                    if (bms_data.cell_volts(i) as i16 - bms_data.min_volt() as i16)
-                        > BAL_EPSILON
-                    {
+                    if (bms_data.cell_volts(i) as i16 - bms_data.min_volt() as i16) > BAL_EPSILON {
                         discharge_bitmap |= 1 << i;
                     }
                 }
-                // In the C code the lower 8 bits go into config[4] and the upper nibble (4 bits) goes into config[5].
+                // Lower 8 discharge bits go into config[4], the upper nibble into config[5].
                 self.config[4] = (discharge_bitmap & 0xFF) as u8;
                 self.config[5] = ((discharge_bitmap >> 8) & 0x0F) as u8;
             } else {
@@ -216,7 +247,8 @@ impl LTC6811 {
         Ok(())
     }
 
-    // Initialize the LTC6811
+    /// One-time initialisation: writes the configuration, wakes the device and
+    /// reads back the configuration register group for sanity.
     pub async fn init(&mut self) -> Result<(), ()> {
         // Write configuration registers
         self.init_cfg().await?;
@@ -239,6 +271,7 @@ impl LTC6811 {
         Ok(())
     }
 
+    /// Wakes the device from sleep by clocking dummy bytes with CS asserted.
     pub async fn wakeup(&mut self) {
         let mut spi_data = self.spi.lock().await;
         spi_data.cs.set_low();
@@ -251,6 +284,7 @@ impl LTC6811 {
         drop(spi_data);
     }
 
+    /// Short wake-from-idle pulse before isoSPI command bursts.
     pub async fn wakeup_idle(&mut self) {
         let mut spi_data = self.spi.lock().await;
         spi_data.cs.set_low();
@@ -259,7 +293,7 @@ impl LTC6811 {
         drop(spi_data);
     }
 
-    // Write configuration to LTC6811
+    /// Writes the 6 configuration bytes (plus PEC) to register group A.
     pub async fn write_config(&mut self) -> Result<(), ()> {
         let cmd = self.prepare_command(WRCFGA);
 
@@ -282,7 +316,7 @@ impl LTC6811 {
         Ok(())
     }
 
-    // Start cell voltage conversion
+    /// Starts an all-cell ADC conversion and polls until it completes.
     pub async fn start_cell_conversion(&mut self) -> Result<(), ()> {
         let cmd = self.prepare_command(ADCV);
 
@@ -293,7 +327,7 @@ impl LTC6811 {
 
         drop(spi_data);
         // Wait for conversion to complete (typical conversion time ~2ms)
-        let poll = self.prepare_command(PLADC);   // const PLADC: [u8;2] = [0x07, 0x00];
+        let poll = self.prepare_command(PLADC); // const PLADC: [u8;2] = [0x07, 0x00];
         let mut status = [0u8; 8];
         loop {
             let mut spi_data = self.spi.lock().await;
@@ -307,7 +341,11 @@ impl LTC6811 {
 
         Ok(())
     }
-    // Read cell voltage registers and update BMS
+
+    /// Reads all 12 cell voltages (register groups A-D) and updates the model.
+    ///
+    /// Each cell is a little-endian 16-bit code; the four 3-cell groups are
+    /// reassembled into a 12-element array and pushed into [`SLAVEBMS`].
     pub async fn read_cell_voltages(&mut self) -> Result<(), ()> {
         // Start voltage conversion
         self.start_cell_conversion().await?;
@@ -318,34 +356,26 @@ impl LTC6811 {
         // Read voltage registers (cells 1-3)
         let cmd_a = self.prepare_command(RDCVA);
         let mut data_a = [0u8; 8]; // 6 data bytes + 2 PEC bytes
-                                   // spi_data.write(&cmd_a).await;
-                                   // self.transfer_ltc(&mut spi_data, &mut data_a).await;
         spi_data.cmd_read(&cmd_a, &mut data_a).await.unwrap();
         // Read voltage registers (cells 4-6)
         let cmd_b = self.prepare_command(RDCVB);
         let mut data_b = [0u8; 8];
-        // spi_data.write(&cmd_b).await;
-        // self.transfer_ltc(&mut spi_data, &mut data_b).await;
         spi_data.cmd_read(&cmd_b, &mut data_b).await.unwrap();
 
         // Read voltage registers (cells 7-9)
         let cmd_c = self.prepare_command(RDCVC);
         let mut data_c = [0u8; 8];
-        // spi_data.write(&cmd_c).await;
-        // self.transfer_ltc(&mut spi_data, &mut data_c).await;
         spi_data.cmd_read(&cmd_c, &mut data_c).await.unwrap();
 
         // Read voltage registers (cells 10-12)
         let cmd_d = self.prepare_command(RDCVD);
         let mut data_d = [0u8; 8];
-        // spi_data.write(&cmd_d).await;
-        // self.transfer_ltc(&mut spi_data, &mut data_d).await;
         spi_data.cmd_read(&cmd_d, &mut data_d).await.unwrap();
 
         drop(spi_data);
 
         // Process and update BMS with cell voltages
-        // Each cell voltage is 16-bit (2 bytes)
+        // Each cell voltage is 16-bit (2 bytes), little-endian.
 
         let mut cells: [u16; 12] = [0; 12];
         // Cells 1-3
@@ -379,6 +409,7 @@ impl LTC6811 {
         Ok(())
     }
 
+    /// Starts an auxiliary (GPIO/thermistor) conversion and polls completion.
     pub async fn start_temperature_conversion(&mut self) -> Result<(), ()> {
         let cmd = self.prepare_command(ADAX);
         self.wakeup().await;
@@ -395,7 +426,9 @@ impl LTC6811 {
             let mut spi_data = self.spi.lock().await;
             let mut status = [0u8; 8];
             spi_data.cmd_read(&poll, &mut status).await.unwrap();
-            if status[0] & 0x01 != 0 { break }
+            if status[0] & 0x01 != 0 {
+                break;
+            }
             drop(spi_data);
             Timer::after(Duration::from_micros(500)).await;
         }
@@ -405,7 +438,8 @@ impl LTC6811 {
         Ok(())
     }
 
-    // Read temperature sensor (assuming connected to GPIO1/AUX1)
+    /// Reads the four thermistor channels (AUXA/AUXB), checks their PEC, and
+    /// converts each raw code to a temperature stored in the model.
     pub async fn read_temperatures(&mut self) -> Result<(), ()> {
         // 1) start the ADC on the GPIO pins
         self.start_temperature_conversion().await?;
@@ -413,19 +447,19 @@ impl LTC6811 {
         self.wakeup_idle().await;
         let mut spi_data = self.spi.lock().await;
 
-        // lock SPI once
+        // 2) read AUXA (GPIO1-3) — lock SPI once
         let mut auxa = [0u8; 8];
         let cmd_a = self.prepare_command(RDAUXA);
         spi_data.cmd_read(&cmd_a, &mut auxa).await.unwrap();
 
-        // 3) read AUXB (contains GPIO4)
+        // 3) read AUXB (contains GPIO4 + reference)
         let mut auxb = [0u8; 8];
         let cmd_b = self.prepare_command(RDAUXB);
         spi_data.cmd_read(&cmd_b, &mut auxb).await.unwrap();
         // release SPI
         drop(spi_data);
 
-        // 4) PEC check
+        // 4) PEC check (logged but currently non-fatal)
         let pec_a = [auxa[6], auxa[7]];
         if pec_a != self.calculate_pec(&auxa[0..6]) {
             defmt::error!("PEC fail AUXA");
@@ -447,7 +481,7 @@ impl LTC6811 {
 
         let voltage_ref = u16::from_be_bytes([auxb[5], auxb[4]]);
 
-        // 6) update your BMS struct
+        // 6) update the BMS struct
         let mut bms = self.bms.lock().await;
         for (i, &code) in codes.iter().enumerate() {
             bms.update_temp(i, self.parse_temp(code, voltage_ref));
@@ -456,18 +490,19 @@ impl LTC6811 {
         Ok(())
     }
 
-    // Periodic update - call this regularly to keep BMS data fresh
+    /// Refreshes the whole pack: cell voltages, then temperatures, then folds
+    /// the new snapshot into the rolling history. Call this regularly.
     pub async fn update(&mut self) -> Result<(), ()> {
         // Read all cell voltages
-        self.set_mode(MODE::NORMAL).await;
+        self.set_mode(Mode::NORMAL).await;
 
         match self.read_cell_voltages().await {
             Ok(_) => {}
             Err(_) => return Err(()),
         }
-        
+
         match self.read_temperatures().await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(_) => return Err(()),
         }
 
@@ -478,41 +513,52 @@ impl LTC6811 {
         Ok(())
     }
 
-
+    /// Converts a raw thermistor ADC code to a temperature (0.1 °C units).
+    ///
+    /// Computes the thermistor resistance from the GPIO/reference voltages, then
+    /// applies the Beta equation. Returns saturation values on open/short.
     pub fn parse_temp(&self, voltage_gpio: u16, _voltage_ref: u16) -> u16 {
         if voltage_gpio == 0 {
             return u16::MAX;
         }
 
-        let r_th = (RTHERMISTOR_OHM as f32)* (voltage_gpio as f32)*0.1 / ((_voltage_ref as f32)*0.1 - (((voltage_gpio as f32) * 0.1))); 
+        // Resistance divider -> thermistor resistance.
+        let r_th = (RTHERMISTOR_OHM as f32) * (voltage_gpio as f32) * 0.1
+            / ((_voltage_ref as f32) * 0.1 - ((voltage_gpio as f32) * 0.1));
 
-        let inv_t = 1f32/(KELVIN_2_CELSIUS + 25f32) + (1f32/B_COEFF) * logf((r_th/1000f32) / R25);
-        
+        // Beta equation: 1/T = 1/T0 + (1/B) * ln(R/R25).
+        let inv_t =
+            1f32 / (KELVIN_2_CELSIUS + 25f32) + (1f32 / B_COEFF) * logf((r_th / 1000f32) / R25);
 
         if inv_t < 0.0f32 {
             return u16::MIN;
         }
 
-        let temp = if inv_t != 0.0f32 {1.0f32/inv_t} else {1.0f32/(inv_t+ 1e-6)};
+        let temp = if inv_t != 0.0f32 {
+            1.0f32 / inv_t
+        } else {
+            1.0f32 / (inv_t + 1e-6)
+        };
 
-        let temp_i32: i32 = roundf((temp - KELVIN_2_CELSIUS)*10.0f32) as i32;
+        // Convert Kelvin -> Celsius, scale to 0.1 °C, and clamp.
+        let temp_i32: i32 = roundf((temp - KELVIN_2_CELSIUS) * 10.0f32) as i32;
         if temp_i32 < (MIN_TEMP as i32) {
             return MIN_TEMP;
         } else if temp_i32 > (MAX_TEMP as i32) {
             return MAX_TEMP;
         } else {
             temp_i32 as u16
-        }       
+        }
     }
 
+    /// Returns `true` while at least one cell is more than [`BAL_EPSILON`] above
+    /// the pack minimum (i.e. balancing is still useful).
     pub async fn check_need_balance(&self) -> bool {
         let bms_data = self.bms.lock().await;
         // Iterate over all 12 cells. Here we assume that bms_data.cell_volts is an array of 12 u16.
         for i in 0..NUM_CELLS {
             // If the cell voltage exceeds the minimum by more than BAL_EPSILON, enable discharge.
-            if (bms_data.cell_volts(i) as i16 - bms_data.min_volt() as i16)
-                > BAL_EPSILON
-            {
+            if (bms_data.cell_volts(i) as i16 - bms_data.min_volt() as i16) > BAL_EPSILON {
                 return true;
             }
         }
@@ -526,10 +572,7 @@ impl LTC6811 {
     //     // Read voltage registers (cells 1-3)
     //     let cmd_a = self.prepare_command(RDCFGA);
     //     let mut data_a = [0u8; 8]; // 6 data bytes + 2 PEC bytes
-    //                                // spi_data.write(&cmd_a).await;
-    //                                // self.transfer_ltc(&mut spi_data, &mut data_a).await;
     //     spi_data.cmd_read(&cmd_a, &mut data_a).await.unwrap();
-        
-    // }
 
+    // }
 }
