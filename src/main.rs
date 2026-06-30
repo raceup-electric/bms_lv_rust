@@ -48,7 +48,7 @@ async fn main(spawner: Spawner) -> ! {
     let current_adc: embassy_stm32::adc::Adc<'static, ADC1, > = Adc::new(p.ADC1);
     let current_pin: embassy_stm32::peripherals::PA1 = p.PA1;
 
-    let (can, rx1, tx1) = CanController::new_can2(p.CAN2, p.PB12, p.PB13, 500_000, p.CAN1, p.PA11, p.PA12).await;
+    let (can, rx1, tx1) = CanController::new_can2(p.CAN2, p.PB12, p.PB13, 1_000_000, p.CAN1, p.PA11, p.PA12).await;
     let can_mutex = Mutex::new(can);
     let can = StaticCell::init(&CAN, can_mutex);
     

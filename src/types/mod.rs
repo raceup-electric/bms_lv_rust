@@ -4,15 +4,15 @@ pub use bms::SLAVEBMS;
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CanMsg {
-    VoltageId = 0x54,
-    TemperatureId = 0x55,
-    Balancing = 0x1A4,
-    ErrorId = 0x14,
-    Tech = 0x365,
-    Tech1 = 0x366,
-    Tech2 = 0x367,
-    Tech3 = 0x368,
-    Tech4 = 0x369
+    VoltageId = 0x21C,
+    TemperatureId = 0x220,
+    Balancing = 0x64,
+    ErrorId = 0x5A,
+    Tech = 0x1F9,
+    Tech1 = 0x2F8,
+    Tech2 = 0x2F9,
+    Tech3 = 0x2FA,
+    Tech4 = 0x2FB
 }
 
 impl CanMsg {
