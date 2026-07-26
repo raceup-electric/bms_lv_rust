@@ -8,6 +8,7 @@ pub enum CanMsg {
     TemperatureId = 0x220,
     Balancing = 0x64,
     ErrorId = 0x5A,
+    CurrentId = 0x21E,
     Tech = 0x1F9,
     Tech1 = 0x2F8,
     Tech2 = 0x2F9,

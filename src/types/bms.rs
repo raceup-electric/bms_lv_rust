@@ -83,7 +83,7 @@ impl BMS {
             self.min_temp = if temp < self.min_temp {temp} else {self.min_temp};
 
         }
-        let v_float = (tot_temp as f32) /((NUM_TERMISTORS -1) as f32);
+        let v_float = (tot_temp as f32) /((NUM_TERMISTORS) as f32);
         let rounded: u16 = if v_float >= 0.0 {
             roundf(v_float).max(0.0) as u16
         } else {

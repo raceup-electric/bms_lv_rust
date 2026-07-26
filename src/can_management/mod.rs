@@ -51,18 +51,37 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Resul
         }
     }
 
-    let can_second = [
-        get_byte!(bms.max_temp(), 0),
-        get_byte!(bms.max_temp(), 1),
-        get_byte!(bms.min_temp(), 0),
-        get_byte!(bms.min_temp(), 1),
-        get_byte!(bms.current(), 0),
-        get_byte!(bms.current(), 1),
-        get_byte!(bms.current(), 2),
-        get_byte!(bms.current(), 3)
-    ];
+    let mut can_second = [0u8; 4];
+
+    can_second[0] = (bms.max_temp() & 0xFF) as u8;
+    can_second[1] = ((bms.max_temp() >> 8) & 0x03) as u8 | ((bms.min_temp() & 0x3F) << 2) as u8;
+    can_second[2] = ((bms.min_temp() >> 6) & 0x0F) as u8 | ((bms._avg_temp() & 0x0F) << 4) as u8;
+    can_second[3] = ((bms._avg_temp() >> 4) & 0x3F) as u8 | ((0x00 & 0x01) << 6);
 
     let frame_send = CanFrame::new(CanMsg::TemperatureId.as_raw(), &can_second);
+    match can.write(&frame_send).await {
+        Ok(_) => {},
+
+        Err(CanError::Timeout) => {
+            //info!("Timeout Can connection");
+            return Err(CanError::Timeout);
+        }
+
+        Err(_) => {
+            //info!("Can write error");
+            return Err(CanError::WriteError);
+        }
+    }
+
+    let current = (bms.current() / 100) as u16;
+    let current_frame = [
+        get_byte!(current, 0),
+        get_byte!(current, 1),
+        0x00,
+        0x00
+    ];
+
+    let frame_send = CanFrame::new(CanMsg::CurrentId.as_raw(), &current_frame);
     match can.write(&frame_send).await {
         Ok(_) => Ok(()),
 
@@ -76,6 +95,7 @@ pub async fn can_operation(bms: &SLAVEBMS, can: &mut CanController<'_>) -> Resul
             return Err(CanError::WriteError);
         }
     }
+
 }
 
 
