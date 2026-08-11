@@ -13,7 +13,9 @@ pub enum CanMsg {
     Tech1 = 0x2F8,
     Tech2 = 0x2F9,
     Tech3 = 0x2FA,
-    Tech4 = 0x2FB
+    Tech4 = 0x2FB,
+    Tech5 = 0x2FC,
+    Tech6 = 0x2FD,
 }
 
 impl CanMsg {

@@ -307,7 +307,7 @@ async fn ltc_function(
                 embassy_time::Timer::after_millis(1).await;
             }
 
-            for i in 0..4{
+            for i in 0..12{
                 info!("Temp {}: {} C", i, roundf(bms_data.temps(i) as f32 /10f32));
                 embassy_time::Timer::after_millis(1).await;
             }

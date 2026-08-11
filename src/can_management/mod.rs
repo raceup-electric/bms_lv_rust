@@ -181,31 +181,29 @@ pub async fn can_operation_tech(bms: &SLAVEBMS, can: &mut CanController<'_>) -> 
         }
     }
 
-    let can_fourth = [
-        get_byte!(bms.temps(0), 0),
-        get_byte!(bms.temps(0), 1),
-        get_byte!(bms.temps(1), 0),
-        get_byte!(bms.temps(1), 1),
-        get_byte!(bms.temps(2), 0),
-        get_byte!(bms.temps(2), 1),
-        get_byte!(bms.temps(3), 0),
-        get_byte!(bms.temps(3), 1),
-    ];
+    for (message, start) in [(CanMsg::Tech4, 0), (CanMsg::Tech5, 4), (CanMsg::Tech6, 8)] {
+        let temperatures = [
+            get_byte!(bms.temps(start), 0),
+            get_byte!(bms.temps(start), 1),
+            get_byte!(bms.temps(start + 1), 0),
+            get_byte!(bms.temps(start + 1), 1),
+            get_byte!(bms.temps(start + 2), 0),
+            get_byte!(bms.temps(start + 2), 1),
+            get_byte!(bms.temps(start + 3), 0),
+            get_byte!(bms.temps(start + 3), 1),
+        ];
 
-    let frame_send = CanFrame::new(CanMsg::Tech4.as_raw(), &can_fourth);
-    match can.write(&frame_send).await {
-        Ok(_) => {
-            Ok(())
+        let frame_send = CanFrame::new(message.as_raw(), &temperatures);
+        match can.write(&frame_send).await {
+            Ok(_) => {}
+            Err(CanError::Timeout) => return Err(CanError::Timeout),
+            Err(_) => return Err(CanError::WriteError),
         }
 
-        Err(CanError::Timeout) => {
-            //info!("Timeout Can tech connection");
-            return Err(CanError::Timeout);
-        }
-
-        Err(_) => {
-            //info!("Can tech write error");
-            return Err(CanError::WriteError);
-        }
+        // `try_write` fills a hardware TX mailbox immediately. Leave time for
+        // transmission before submitting the next temperature frame.
+        embassy_time::Timer::after_millis(10).await;
     }
+
+    Ok(())
 }
