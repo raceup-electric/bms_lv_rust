@@ -13,8 +13,12 @@ pub enum CanMsg {
     Tech1 = 0x2F8,
     Tech2 = 0x2F9,
     Tech3 = 0x2FA,
-    Tech4 = 0x2FB
+    BMSLVTemps1 = 0x2FB, // 763
+    BMSLVTemps2 = 0x2FC, // 764
+    BMSLVTemps3 = 0x2FD, // 765
+
 }
+
 
 impl CanMsg {
     pub fn as_raw(&self) -> u16 {
