@@ -28,7 +28,7 @@ impl CanMsg {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum VOLTAGES {
     MAXVOLTAGE = 42000,
-    MINVOLTAGE = 32000
+    MINVOLTAGE = 32000,
 }
 
 impl VOLTAGES {
@@ -40,8 +40,8 @@ impl VOLTAGES {
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TEMPERATURES {
-    MAXTEMP = 60,
-    MINTEMP = 10
+    MAXTEMP = 600,
+    MINTEMP = 100,
 }
 
 impl TEMPERATURES {
