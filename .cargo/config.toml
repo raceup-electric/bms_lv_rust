@@ -1,13 +1,10 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-# replace STM32F429ZITx with your chip as listed in `probe-rs chip list`
-#runner = "probe-rs run --chip STM32F405RGTx --connect-under-reset"
-runner ="sh post_build.sh"
+runner = "sh post_build.sh"
 
 [build]
-target = "thumbv7em-none-eabihf"
+target = "thumbv8m.main-none-eabihf"
 
 [env]
-DEFMT_LOG = "debug"
 EMBASSY_USB_MAX_INTERFACE_COUNT        = "16"
 EMBASSY_USB_MAX_HANDLER_COUNT          = "16"
 EMBASSY_EXECUTOR_TASK_ARENA_SIZE       = "30000"

@@ -3,9 +3,8 @@ use crate::types::{bms::SLAVEBMS, VOLTAGES};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 
-use libm::{roundf, logf}; // libm helper functions
+use libm::{logf, roundf};
 
-// LTC6811 command codes (kept from your file)
 pub const WRCFGA: [u8; 2] = [0x00, 0x01];
 pub const RDCFGA: [u8; 2] = [0x00, 0x02];
 pub const RDCVA: [u8; 2] = [0x00, 0x04];
@@ -18,11 +17,9 @@ pub const ADCV: [u8; 2] = [0x02, 0x60];
 pub const ADAX: [u8; 2] = [0x04, 0x80];
 pub const PLADC: [u8; 2] = [0x07, 0x14];
 
-// COMM/WRCOMM/COMM codes for LTC6811 serial engine
-pub const WRCOMM: [u8; 2] = [0x07, 0x01];
-pub const COMM: [u8; 2] = [0x07, 0x02]; // execute COMM (same as RDCOMM in some docs)
+pub const WRCOMM: [u8; 2] = [0x07, 0x21];
+pub const STCOMM: [u8; 2] = [0x07, 0x23];
 
-// Constants from your file (kept)
 const RTHERMISTOR_OHM: u32 = 22_000;
 const R25: f32 = 9.914;
 const B_COEFF: f32 = 3435.0;
@@ -37,10 +34,9 @@ const GPIO1: u8 = 0x01;
 const GPIO2: u8 = 0x01;
 const GPIO3: u8 = 0x01;
 const GPIO4: u8 = 0x01;
-const GPIO5: u8 = 0x00;
-const GPIOS: u8 = 0x0 | (GPIO1 << 3) | (GPIO2 << 4) | (GPIO3 << 5) | (GPIO4 << 6) | (GPIO5 << 7);
+const GPIO5: u8 = 0x01;
+const GPIOS: u8 = (GPIO1 << 3) | (GPIO2 << 4) | (GPIO3 << 5) | (GPIO4 << 6) | (GPIO5 << 7);
 
-#[allow(unused)]
 const CRC15_TABLE: [u16; 256] = [
     0x0, 0xc599, 0xceab, 0xb32, 0xd8cf, 0x1d56, 0x1664, 0xd3fd, 0xf407, 0x319e, 0x3aac, 0xff35,
     0x2cc8, 0xe951, 0xe263, 0x27fa, 0xad97, 0x680e, 0x633c, 0xa6a5, 0x7558, 0xb0c1, 0xbbf3, 0x7e6a,
@@ -78,11 +74,23 @@ pub struct LTC6811 {
     config: [u8; 6],
     mode: MODE,
     prev_mode: MODE,
+    diagnostics: LtcDiagnostics,
 }
 
-// Number of thermistors to read
+#[derive(Clone, Copy, Default)]
+pub struct LtcDiagnostics {
+    pub config_valid: bool,
+    pub cell_pec_valid: bool,
+    pub auxa_pec_valid: bool,
+    pub auxb_pec_valid: bool,
+    pub cell_group: u8,
+    pub received_pec: u16,
+    pub calculated_pec: u16,
+    pub cell_pec_errors: u8,
+    pub aux_pec_errors: u8,
+}
+
 const NUM_THERMISTORS: usize = 12;
-// We will support up to 8 channels per physical mux; we use two muxes to cover 12 sensors.
 const MUXES: usize = 2;
 const CHANNELS_PER_MUX: usize = 8;
 
@@ -91,14 +99,7 @@ impl LTC6811 {
         spi: &'static Mutex<CriticalSectionRawMutex, SpiDevice<'static>>,
         bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>,
     ) -> Self {
-        let config = [
-            GPIOS | ADCOPT | REFON,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-        ];
+        let config = [GPIOS | ADCOPT | REFON, 0x00, 0x00, 0x00, 0x00, 0x00];
 
         LTC6811 {
             spi,
@@ -106,10 +107,10 @@ impl LTC6811 {
             config,
             mode: MODE::NORMAL,
             prev_mode: MODE::NORMAL,
+            diagnostics: LtcDiagnostics::default(),
         }
     }
 
-    // PEC calculation (unchanged)
     pub fn calculate_pec(&self, data: &[u8]) -> [u8; 2] {
         let mut remainder: u16 = 16;
         for byte in data {
@@ -146,7 +147,8 @@ impl LTC6811 {
 
         {
             let bms_data = self.bms.lock().await;
-            if self.mode == MODE::BALANCING && bms_data.min_volt() != 0 && bms_data.max_volt() != 0 {
+            if self.mode == MODE::BALANCING && bms_data.min_volt() != 0 && bms_data.max_volt() != 0
+            {
                 let mut discharge_bitmap: u16 = 0;
                 for i in 0..NUM_CELLS {
                     if (bms_data.cell_volts(i) as i16 - bms_data.min_volt() as i16) > BAL_EPSILON {
@@ -176,6 +178,8 @@ impl LTC6811 {
         let mut spi_data = self.spi.lock().await;
         spi_data.cmd_read(&cmd, &mut read_config).await.unwrap();
         drop(spi_data);
+        self.diagnostics.config_valid = read_config[..6] == self.config
+            && read_config[6..8] == self.calculate_pec(&read_config[..6]);
         Ok(())
     }
 
@@ -260,6 +264,22 @@ impl LTC6811 {
 
         drop(spi_data);
 
+        let groups = [&data_a, &data_b, &data_c, &data_d];
+        let mut all_groups_valid = true;
+        for (group, data) in groups.into_iter().enumerate() {
+            let calculated = self.calculate_pec(&data[..6]);
+            let received = [data[6], data[7]];
+            self.diagnostics.cell_group = group as u8;
+            self.diagnostics.received_pec = u16::from_be_bytes(received);
+            self.diagnostics.calculated_pec = u16::from_be_bytes(calculated);
+            let valid = received == calculated;
+            all_groups_valid &= valid;
+            if !valid {
+                self.diagnostics.cell_pec_errors = self.diagnostics.cell_pec_errors.wrapping_add(1);
+            }
+        }
+        self.diagnostics.cell_pec_valid = all_groups_valid;
+
         let mut cells: [u16; 12] = [0; 12];
         cells[0] = ((data_a[1] as u16) << 8) | (data_a[0] as u16);
         cells[1] = ((data_a[3] as u16) << 8) | (data_a[2] as u16);
@@ -275,9 +295,10 @@ impl LTC6811 {
         cells[11] = ((data_d[5] as u16) << 8) | (data_d[4] as u16);
 
         let mut bms_data = self.bms.lock().await;
-        for i in 0..12 {
-            bms_data.update_cell(i, cells[i]);
+        for (i, cell) in cells.into_iter().enumerate() {
+            bms_data.update_cell(i, cell);
         }
+        bms_data.set_cell_data_valid(all_groups_valid);
         drop(bms_data);
 
         Ok(())
@@ -297,7 +318,9 @@ impl LTC6811 {
             let mut spi_data = self.spi.lock().await;
             let mut status = [0u8; 8];
             spi_data.cmd_read(&poll, &mut status).await.unwrap();
-            if status[0] & 0x01 != 0 { break }
+            if status[0] & 0x01 != 0 {
+                break;
+            }
             drop(spi_data);
             Timer::after(Duration::from_micros(500)).await;
         }
@@ -306,96 +329,84 @@ impl LTC6811 {
         Ok(())
     }
 
-    // Parse temperature (unchanged)
     pub fn parse_temp(&self, voltage_gpio: u16, _voltage_ref: u16) -> u16 {
         if voltage_gpio == 0 {
             return u16::MAX;
         }
 
         let r_th = (RTHERMISTOR_OHM as f32) * (voltage_gpio as f32) * 0.1
-            / ((_voltage_ref as f32) * 0.1 - (((voltage_gpio as f32) * 0.1)));
+            / ((_voltage_ref as f32) * 0.1 - ((voltage_gpio as f32) * 0.1));
 
-        let inv_t = 1f32 / (KELVIN_2_CELSIUS + 25f32)
-            + (1f32 / B_COEFF) * logf((r_th / 1000f32) / R25);
+        let inv_t =
+            1f32 / (KELVIN_2_CELSIUS + 25f32) + (1f32 / B_COEFF) * logf((r_th / 1000f32) / R25);
 
         if inv_t < 0.0f32 {
             return u16::MIN;
         }
 
-        let temp = if inv_t != 0.0f32 { 1.0f32 / inv_t } else { 1.0f32 / (inv_t + 1e-6) };
+        let temp = if inv_t != 0.0f32 {
+            1.0f32 / inv_t
+        } else {
+            1.0f32 / (inv_t + 1e-6)
+        };
 
         let temp_i32: i32 = roundf((temp - KELVIN_2_CELSIUS) * 10.0f32) as i32;
         if temp_i32 < (MIN_TEMP as i32) {
-            return MIN_TEMP;
+            MIN_TEMP
         } else if temp_i32 > (MAX_TEMP as i32) {
-            return MAX_TEMP;
+            MAX_TEMP
         } else {
             temp_i32 as u16
         }
     }
 
-    // Select a channel on a specific external mux using LTC6811 COMM engine.
-    // mux_index: 0..(MUXES-1)
-    // channel: 0..(CHANNELS_PER_MUX-1)
     pub async fn select_mux_channel(&mut self, mux_index: u8, channel: u8) -> Result<(), ()> {
         if mux_index as usize >= MUXES || channel as usize >= CHANNELS_PER_MUX {
             return Err(());
         }
 
-        // For LTC4306-like mux: 3-bit channel address (0..7)
-        // We'll pack a small COMM payload:
-        // COMM register is 6 bytes long; we place the address and a simple control pattern.
-        // Layout (example): [addr_byte, mux_select_byte, 0,0,0,0]
-        // The exact pattern depends on your mux wiring; adjust if needed.
-        let addr = channel & 0x07;
-        let mut comm = [0u8; 6];
+        let address = if mux_index == 0 { 0x90u8 } else { 0x94u8 };
+        let control = 0x08 | (channel & 0x07);
+        let comm = [
+            0x60 | (address >> 4),
+            (address << 4) | 0x08,
+            control >> 4,
+            (control << 4) | 0x09,
+            0xFF,
+            0xFF,
+        ];
 
-        // We encode mux_index in upper nibble and channel in lower nibble to allow multiple muxes.
-        // The external hardware must decode this; if you have separate enable lines per mux,
-        // instead send the channel only and toggle the enable GPIO externally.
-        comm[0] = addr | ((mux_index & 0x03) << 4);
-
-        // Write COMM register
         let cmd_wr = self.prepare_command(WRCOMM);
-        let mut frame_wr = [0u8; 10];
+        let mut frame_wr = [0u8; 12];
         frame_wr[0..4].copy_from_slice(&cmd_wr);
         frame_wr[4..10].copy_from_slice(&comm);
+        frame_wr[10..12].copy_from_slice(&self.calculate_pec(&comm));
 
         self.wakeup_idle().await;
         let mut spi_data = self.spi.lock().await;
         spi_data.write(&frame_wr).await;
 
-        // Execute COMM (this will shift the bits out on the configured GPIO pins)
-        let cmd_exec = self.prepare_command(COMM);
-        spi_data.write(&cmd_exec).await;
+        let cmd_exec = self.prepare_command(STCOMM);
+        spi_data.start_comm(&cmd_exec).await?;
 
         drop(spi_data);
-        // Small delay to allow mux to settle
         Timer::after_millis(1).await;
         Ok(())
     }
 
-    // Read temperatures from 12 thermistors using two muxes (or more if needed).
-    // Each mux channel is selected and the LTC6811 AUX ADC reads the routed thermistor on AUX1.
     pub async fn read_mux_temperatures(&mut self) -> Result<(), ()> {
-        // We'll map thermistor indices 0..11 to (mux_index, channel)
         for therm_idx in 0..NUM_THERMISTORS {
-            let mux_index = (therm_idx / CHANNELS_PER_MUX) as u8; // 0 or 1
+            let mux_index = (therm_idx / CHANNELS_PER_MUX) as u8;
             let channel = (therm_idx % CHANNELS_PER_MUX) as u8;
 
-            // 1) select mux channel
-            if let Err(_) = self.select_mux_channel(mux_index, channel).await {
-                defmt::error!("Failed to select mux {} ch {}", mux_index, channel);
+            if self.select_mux_channel(mux_index, channel).await.is_err() {
                 continue;
             }
 
-            // 2) start ADC conversion for AUX pins
-            if let Err(_) = self.start_temperature_conversion().await {
-                defmt::error!("Failed to start temperature conversion for thermistor {}", therm_idx);
+            if self.start_temperature_conversion().await.is_err() {
                 continue;
             }
 
-            // 3) read AUXA/AUXB
             self.wakeup_idle().await;
             let mut spi_data = self.spi.lock().await;
 
@@ -408,27 +419,25 @@ impl LTC6811 {
             spi_data.cmd_read(&cmd_b, &mut auxb).await.unwrap();
 
             drop(spi_data);
-
-            // 4) PEC check
+batte
             let pec_a = [auxa[6], auxa[7]];
-            if pec_a != self.calculate_pec(&auxa[0..6]) {
-                defmt::error!("PEC fail AUXA thermistor {}", therm_idx);
+            self.diagnostics.auxa_pec_valid = pec_a == self.calculate_pec(&auxa[0..6]);
+            if !self.diagnostics.auxa_pec_valid {
+                self.diagnostics.aux_pec_errors = self.diagnostics.aux_pec_errors.wrapping_add(1);
             }
             let pec_b = [auxb[6], auxb[7]];
-            if pec_b != self.calculate_pec(&auxb[0..6]) {
-                defmt::error!("PEC fail AUXB thermistor {}", therm_idx);
+            self.diagnostics.auxb_pec_valid = pec_b == self.calculate_pec(&auxb[0..6]);
+            if !self.diagnostics.auxb_pec_valid {
+                self.diagnostics.aux_pec_errors = self.diagnostics.aux_pec_errors.wrapping_add(1);
             }
 
-            // 5) extract ADC code and vref
-            let code = u16::from_be_bytes([auxa[1], auxa[0]]); // GPIO1 / AUX1
+            let code = u16::from_be_bytes([auxa[1], auxa[0]]);
             let vref = u16::from_be_bytes([auxb[5], auxb[4]]);
 
-            // 6) update BMS
             let mut bms = self.bms.lock().await;
             bms.update_temp(therm_idx, self.parse_temp(code, vref));
             drop(bms);
 
-            // small inter-channel delay to allow mux settle
             Timer::after_millis(2).await;
         }
 
@@ -436,13 +445,16 @@ impl LTC6811 {
     }
 
     pub async fn read_temperatures(&mut self) -> Result<(), ()> {
-        // Keep original single-read API for backward compatibility:
-        // If you want muxed reads, call read_mux_temperatures instead.
         self.read_mux_temperatures().await
     }
 
     pub async fn update(&mut self) -> Result<(), ()> {
         self.set_mode(MODE::NORMAL).await;
+
+        {
+            let mut bms_data = self.bms.lock().await;
+            bms_data.begin_measurement_cycle();
+        }
 
         self.read_cell_voltages().await?;
         self.read_temperatures().await?;
@@ -462,5 +474,9 @@ impl LTC6811 {
             }
         }
         false
+    }
+
+    pub fn diagnostics(&self) -> LtcDiagnostics {
+        self.diagnostics
     }
 }

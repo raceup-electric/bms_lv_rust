@@ -1,28 +1,16 @@
 pub use super::CanFrame;
 
 use embassy_stm32::bind_interrupts;
-use embassy_stm32::can::filter::Mask32;
-use embassy_stm32::can::{
-    Can, Fifo, Rx0InterruptHandler, Rx1InterruptHandler, SceInterruptHandler, TxInterruptHandler
-};
+use embassy_stm32::can::config::TxBufferMode;
+use embassy_stm32::can::{self, CanConfigurator, CanRx, CanTx};
+use embassy_stm32::peripherals::{FDCAN1, PD0, PD1};
+use embassy_stm32::Peri;
+use embassy_time::{with_timeout, Duration};
 
-use embassy_stm32::peripherals::{CAN1, CAN2, PA11, PA12, PB12, PB13};
-use embassy_time::Duration;
-
-bind_interrupts!(struct Irqs1 {
-    CAN1_RX0 => Rx0InterruptHandler<CAN1>;
-    CAN1_RX1 => Rx1InterruptHandler<CAN1>;
-    CAN1_SCE => SceInterruptHandler<CAN1>;
-    CAN1_TX => TxInterruptHandler<CAN1>;
+bind_interrupts!(struct IrqsFdcan1 {
+    FDCAN1_IT0 => can::IT0InterruptHandler<FDCAN1>;
+    FDCAN1_IT1 => can::IT1InterruptHandler<FDCAN1>;
 });
-
-bind_interrupts!(struct Irqs2 {
-    CAN2_RX0 => Rx0InterruptHandler<CAN2>;
-    CAN2_RX1 => Rx1InterruptHandler<CAN2>;
-    CAN2_SCE => SceInterruptHandler<CAN2>;
-    CAN2_TX => TxInterruptHandler<CAN2>;
-});
-
 
 #[derive(Debug)]
 pub enum CanError {
@@ -32,102 +20,44 @@ pub enum CanError {
 }
 
 pub struct CanController<'a> {
-    can: Can<'a>,
-    tx_frame: Option<CanFrame>,
-    is_can2: bool
+    can: CanTx<'a>,
 }
 
+pub struct CanReceiver<'a> {
+    can: CanRx<'a>,
+}
 
-impl<'a> CanController<'a>{
-    async fn new(mut controller: CanController<'a>, baudrate: u32) -> Self {
-        controller.can.modify_config()
-            .set_loopback(false)             // Disable loopback mode
-            .set_silent(false)               // Enable active participation in the bus
-            .set_automatic_retransmit(false) // Disable automatic retransmission
-            .set_bitrate(baudrate); 
-        
-        if !controller.is_can2 {controller.can.modify_filters().enable_bank(0, Fifo::Fifo0, Mask32::accept_all());}
-        controller.can.enable().await;
-        controller
-    }
-
-    pub async fn _new_can1(peri: CAN1, rx: PA11, tx: PA12, baudrate: u32) -> Self {
-        let controller = CanController {
-            can: Can::new(
-                peri,
-                rx,
-                tx,
-                Irqs1
-            ),
-            tx_frame: None,
-            is_can2: false
-        };
-        Self::new(controller, baudrate).await
-    }
-
-    pub async fn new_can2(peri: CAN2, rx: PB12, tx: PB13, baudrate: u32, peri1: CAN1, mut rx1: PA11, mut tx1: PA12) -> (Self, PA11, PA12) {
-        let mut can1 = Can::new(peri1, &mut rx1, &mut tx1, Irqs1);
- 
-        let controller = CanController {
-            can: Can::new(peri, rx, tx, Irqs2),
-            tx_frame: None,
-            is_can2: true
-        };
-
-        can1.modify_filters().set_split(0).num_banks();
-        can1.modify_filters().slave_filters().enable_bank(0, Fifo::Fifo1, Mask32::accept_all());
-        can1.sleep().await;
-        drop(can1);
-
-        (Self::new(controller, baudrate).await, rx1, tx1)       
+impl<'a> CanController<'a> {
+    pub fn new_fdcan1(
+        peri: Peri<'a, FDCAN1>,
+        rx: Peri<'a, PD0>,
+        tx: Peri<'a, PD1>,
+        baudrate: u32,
+    ) -> (Self, CanReceiver<'a>) {
+        let mut configurator = CanConfigurator::new(peri, rx, tx, IrqsFdcan1);
+        configurator.set_bitrate(baudrate);
+        let config = configurator
+            .config()
+            .set_protocol_exception_handling(false)
+            .set_tx_buffer_mode(TxBufferMode::Fifo);
+        configurator.set_config(config);
+        let (tx, rx, _) = configurator.into_normal_mode().split();
+        (Self { can: tx }, CanReceiver { can: rx })
     }
 
     pub async fn write(&mut self, frame: &CanFrame) -> Result<(), CanError> {
-        let mut attempts: u8 = 0;
-
-        while (self.tx_frame.is_some()) && (attempts < 5) {
-            embassy_time::Timer::after(Duration::from_millis(10)).await;
-            attempts = attempts.wrapping_add(1);
+        match with_timeout(Duration::from_millis(10), self.can.write(&frame.frame())).await {
+            Ok(_) => Ok(()),
+            Err(_) => Err(CanError::Timeout),
         }
+    }
+}
 
-        if attempts >= 5 {
-            return Err(CanError::Timeout)
-        }
-
-        let new_frame = frame.clone();
-
-        self.tx_frame = Some(new_frame);
-
-        attempts = 0;
-
-        while attempts < 4 {
-            if let Some(ref tx_frame) = self.tx_frame {
-                match self.can.try_write(&tx_frame.frame()) {
-                    Ok(_) => {
-                        self.tx_frame = None;
-                        return Ok(())
-                    }
-                    Err(_) => {
-                        attempts = attempts.wrapping_add(1);
-                    }
-                }
-            }
-        }
-        self.tx_frame = None;
-        Err(CanError::WriteError)
-    } 
-
+impl CanReceiver<'_> {
     pub async fn read(&mut self) -> Result<CanFrame, CanError> {
-        let envelope = self.can.try_read();
-        match envelope {
-            Ok(_) => {
-                let frame = CanFrame::from_envelope(envelope.unwrap());
-                return Ok(frame);        
-            }
-
-            Err(_) => {
-                return Err(CanError::NoItem);
-            }
+        match self.can.read().await {
+            Ok(envelope) => Ok(CanFrame::from_envelope(envelope)),
+            Err(_) => Err(CanError::NoItem),
         }
     }
 }

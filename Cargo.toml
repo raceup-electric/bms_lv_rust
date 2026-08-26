@@ -3,35 +3,37 @@ name = "bms_lv_rust"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+ltc-hardware = []
+
 [dependencies]
-embassy-stm32 = { version = "^0.2.0", features = ["defmt", "stm32f405rg", "unstable-pac", "memory-x", "time-driver-any", "exti", "chrono", "low-power"] }
-embassy-sync = { version = "^0.6.1", features = ["defmt"] }
-embassy-executor = { version = "^0.7.0", features = ["task-arena-size-32768", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-time = { version = "^0.4.0", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
-embassy-usb = { version = "^0.4.0", features = ["defmt" ] }
-embassy-futures = { version = "^0.1.0"}
-static_cell = "^1.2.0"
-defmt = "1.0.1"
-defmt-rtt = "1.0.0"  
-embassy-usb-logger = "0.4.0" 
-usb-device = "0.2" 
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy.git", rev = "a2b2a3e190a244df16a9a8ec03d7fb9d91d8297c", features = [
+    "stm32h563vi",
+    "unstable-pac",
+    "time-driver-any",
+] }
 
-cortex-m = { version = "^0.7.6", features = ["inline-asm", "critical-section-single-core"] }
-cortex-m-rt = "^0.7.0"
-embedded-hal = "^0.2.6"
-embedded-hal-bus = { version = "^0.2", features = ["async"] }
-embedded-io = { version = "^0.6.0" }
-embedded-io-async = { version = "^0.6.1" }
-panic-probe = { version = "1.0.0", features=["print-defmt"]}
-futures-util = { version = "^0.3.30", default-features = false }
-heapless = { version = "^0.8", default-features = false }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "a2b2a3e190a244df16a9a8ec03d7fb9d91d8297c", features = [
+    "platform-cortex-m",
+    "executor-thread",
+] }
 
-log = "0.4.27"
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "a2b2a3e190a244df16a9a8ec03d7fb9d91d8297c" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "a2b2a3e190a244df16a9a8ec03d7fb9d91d8297c" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy.git", rev = "a2b2a3e190a244df16a9a8ec03d7fb9d91d8297c" }
+panic-probe = "0.3.1"
+static_cell = "2.1.0"
+cortex-m = { version = "0.7.9", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.6"
+embedded-can = "0.4"
+heapless = { version = "0.8", default-features = false }
 libm = "0.2.15"
 
 [profile.release]
 debug = 2
-#test = false
+opt-level = "s"
+lto = true
 
-[package.metadata.defmt]
-panic = "defmt"
+[profile.dev]
+opt-level = 1

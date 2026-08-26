@@ -1,33 +1,57 @@
+#[cfg(feature = "ltc-hardware")]
 pub mod usb;
-pub mod log;
 
-use embassy_stm32::Config;
+#[cfg(feature = "ltc-hardware")]
+pub use usb::Serial;
+
 use embassy_stm32::time::Hertz;
+use embassy_stm32::Config;
 
 pub fn prepare_config() -> Config {
     let mut config = Config::default();
+
     {
         use embassy_stm32::rcc::*;
+
         config.rcc.hse = Some(Hse {
             freq: Hertz(12_000_000),
             mode: HseMode::Oscillator,
         });
 
-        config.rcc.pll_src = PllSource::HSE;
-        config.rcc.pll = Some(Pll {
-            prediv: PllPreDiv::DIV6,
-            mul: PllMul::MUL168,
-            divp: Some(PllPDiv::DIV2),
-            divq: Some(PllQDiv::DIV7),
-            divr: None,
+        config.rcc.pll1 = Some(Pll {
+            source: PllSource::Hse,
+            prediv: PllPreDiv::Div3,
+            mul: PllMul::Mul125,
+            divp: Some(PllDiv::Div2),
+            divq: Some(PllDiv::Div2),
+            divr: Some(PllDiv::Div2),
         });
 
-        config.rcc.ahb_pre = AHBPrescaler::DIV1;
-        config.rcc.apb1_pre = APBPrescaler::DIV4;
-        config.rcc.apb2_pre = APBPrescaler::DIV2;
+        config.rcc.pll2 = Some(Pll {
+            source: PllSource::Hse,
+            prediv: PllPreDiv::Div2,
+            mul: PllMul::Mul60,
+            divp: None,
+            divq: Some(PllDiv::Div9),
+            divr: Some(PllDiv::Div6),
+        });
 
-        config.rcc.sys = Sysclk::PLL1_P;
-        config.rcc.mux.clk48sel = mux::Clk48sel::PLL1_Q;
+        config.rcc.ahb_pre = AHBPrescaler::Div1;
+        config.rcc.apb1_pre = APBPrescaler::Div1;
+        config.rcc.apb2_pre = APBPrescaler::Div1;
+        config.rcc.apb3_pre = APBPrescaler::Div1;
+        config.rcc.voltage_scale = VoltageScale::Scale0;
+
+        config.rcc.sys = Sysclk::Pll1P;
+
+        config.rcc.hsi48 = Some(Hsi48Config {
+            sync_from_usb: true,
+        });
+        config.rcc.mux.usbsel = mux::Usbsel::Hsi48;
+        config.rcc.mux.fdcan12sel = mux::Fdcansel::Pll2Q;
+        config.rcc.mux.adcdacsel = mux::Adcdacsel::Pll2R;
+        config.rcc.mux.lptim2sel = mux::Lptim2sel::Pclk1;
     }
+
     config
 }

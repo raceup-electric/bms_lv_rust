@@ -1,7 +1,7 @@
 use libm::roundf;
 
 pub static NUM_CELLS: usize = 12;
-pub static NUM_TERMISTORS: usize = 4;
+pub static NUM_TERMISTORS: usize = 12;
 pub static NUM_HISTORY: usize = 5;
 
 #[derive(Default, Debug, Copy, Clone)]
@@ -15,7 +15,13 @@ pub struct SLAVEBMS {
     max_temp: u16,
     min_temp: u16,
     avg_temp: u16,
-    current: i32
+    current: i32,
+    cell_data_valid: bool,
+    cell_sample_mask: u16,
+    temperature_sample_mask: u16,
+    seen_cell_sample_mask: u16,
+    seen_temperature_sample_mask: u16,
+    measurement_count: u32,
 }
 
 #[derive(Default, Debug, Copy, Clone)]
@@ -56,16 +62,24 @@ impl BMS {
         self.update();
     }
 
-    fn update(&mut self){
+    fn update(&mut self) {
         self.tot_volt = 0;
         self.max_volt = 0;
         self.min_volt = u16::MAX;
         for &volt in self.cell_volts.iter() {
             self.tot_volt = self.tot_volt.wrapping_add(volt as u32);
-            self.max_volt = if volt > self.max_volt {volt} else {self.max_volt};
-            self.min_volt = if volt < self.min_volt {volt} else {self.min_volt};
+            self.max_volt = if volt > self.max_volt {
+                volt
+            } else {
+                self.max_volt
+            };
+            self.min_volt = if volt < self.min_volt {
+                volt
+            } else {
+                self.min_volt
+            };
         }
-        let v_float = (self.tot_volt as f32) /(NUM_CELLS as f32);
+        let v_float = (self.tot_volt as f32) / (NUM_CELLS as f32);
         let rounded: u16 = if v_float >= 0.0 {
             roundf(v_float).max(0.0) as u16
         } else {
@@ -79,11 +93,18 @@ impl BMS {
         self.min_temp = u16::MAX;
         for &temp in self.temperatures.iter() {
             tot_temp = tot_temp.wrapping_add(temp as u32);
-            self.max_temp = if temp > self.max_temp {temp} else {self.max_temp};
-            self.min_temp = if temp < self.min_temp {temp} else {self.min_temp};
-
+            self.max_temp = if temp > self.max_temp {
+                temp
+            } else {
+                self.max_temp
+            };
+            self.min_temp = if temp < self.min_temp {
+                temp
+            } else {
+                self.min_temp
+            };
         }
-        let v_float = (tot_temp as f32) /((NUM_TERMISTORS) as f32);
+        let v_float = (tot_temp as f32) / ((NUM_TERMISTORS) as f32);
         let rounded: u16 = if v_float >= 0.0 {
             roundf(v_float).max(0.0) as u16
         } else {
@@ -91,8 +112,6 @@ impl BMS {
         };
 
         self.avg_temp = rounded;
-
-
     }
 
     pub fn avg_volt(&self) -> u16 {
@@ -129,7 +148,7 @@ impl SLAVEBMS {
         let bms_history = [BMS::new(); NUM_HISTORY];
         SLAVEBMS {
             bms_history,
-            index: 0 as usize,
+            index: 0,
             tot_volt: 0,
             max_volt: 0,
             min_volt: 0,
@@ -137,7 +156,13 @@ impl SLAVEBMS {
             max_temp: 0,
             min_temp: 0,
             avg_temp: 0,
-            current: 0
+            current: 0,
+            cell_data_valid: false,
+            cell_sample_mask: 0,
+            temperature_sample_mask: 0,
+            seen_cell_sample_mask: 0,
+            seen_temperature_sample_mask: 0,
+            measurement_count: 0,
         }
     }
 
@@ -160,67 +185,106 @@ impl SLAVEBMS {
             avg_temp = avg_temp.wrapping_add(bms.avg_temp() as u64);
         }
 
-        let tot_v_float: f32 = ((tot_volt as f64) /(NUM_HISTORY as f64) ) as f32; 
+        let tot_v_float: f32 = ((tot_volt as f64) / (NUM_HISTORY as f64)) as f32;
         self.tot_volt = if tot_v_float >= 0.0 {
             roundf(tot_v_float).max(0.0) as u32
         } else {
             0
         };
 
-        let max_v_float: f32 = ((max_volt as f64) /(NUM_HISTORY as f64) ) as f32; 
+        let max_v_float: f32 = ((max_volt as f64) / (NUM_HISTORY as f64)) as f32;
         self.max_volt = if max_v_float >= 0.0 {
             roundf(max_v_float).max(0.0) as u16
         } else {
             0
         };
 
-        let min_v_float: f32 = ((min_volt as f64) /(NUM_HISTORY as f64) ) as f32; 
+        let min_v_float: f32 = ((min_volt as f64) / (NUM_HISTORY as f64)) as f32;
         self.min_volt = if min_v_float >= 0.0 {
             roundf(min_v_float).max(0.0) as u16
         } else {
             0
         };
 
-        let avg_v_float: f32 = ((avg_volt as f64) /(NUM_HISTORY as f64) ) as f32; 
+        let avg_v_float: f32 = ((avg_volt as f64) / (NUM_HISTORY as f64)) as f32;
         self.avg_volt = if avg_v_float >= 0.0 {
             roundf(avg_v_float).max(0.0) as u16
         } else {
             0
         };
 
-        let max_t_float: f32 = ((max_temp as f64) /(NUM_HISTORY as f64) ) as f32; 
+        let max_t_float: f32 = ((max_temp as f64) / (NUM_HISTORY as f64)) as f32;
         self.max_temp = if max_t_float >= 0.0 {
             roundf(max_t_float).max(0.0) as u16
         } else {
             0
         };
 
-        let min_t_float: f32 = ((min_temp as f64) /(NUM_HISTORY as f64) ) as f32; 
+        let min_t_float: f32 = ((min_temp as f64) / (NUM_HISTORY as f64)) as f32;
         self.min_temp = if min_t_float >= 0.0 {
             roundf(min_t_float).max(0.0) as u16
         } else {
             0
         };
 
-        let avg_t_float: f32 = ((avg_temp as f64) /(NUM_HISTORY as f64) ) as f32; 
+        let avg_t_float: f32 = ((avg_temp as f64) / (NUM_HISTORY as f64)) as f32;
         self.avg_temp = if avg_t_float >= 0.0 {
             roundf(avg_t_float).max(0.0) as u16
         } else {
             0
         };
 
-        self.index = self.index + 1;
+        self.index += 1;
         if self.index >= NUM_HISTORY {
             self.index = 0;
         }
+        self.measurement_count = self.measurement_count.wrapping_add(1);
     }
 
     pub fn update_temp(&mut self, i: usize, value: u16) {
         self.bms_history[self.index].update_temp(i, value);
+        self.temperature_sample_mask |= 1 << i;
+        self.seen_temperature_sample_mask |= 1 << i;
     }
 
     pub fn update_cell(&mut self, i: usize, value: u16) {
         self.bms_history[self.index].update_cell(i, value);
+        self.cell_sample_mask |= 1 << i;
+        self.seen_cell_sample_mask |= 1 << i;
+    }
+
+    pub fn begin_measurement_cycle(&mut self) {
+        self.cell_sample_mask = 0;
+        self.temperature_sample_mask = 0;
+        self.cell_data_valid = false;
+    }
+
+    pub fn has_all_cell_samples(&self) -> bool {
+        self.cell_sample_mask == (1 << NUM_CELLS) - 1
+    }
+
+    pub fn set_cell_data_valid(&mut self, valid: bool) {
+        self.cell_data_valid = valid;
+    }
+
+    pub fn cell_data_valid(&self) -> bool {
+        self.cell_data_valid
+    }
+
+    pub fn has_all_temperature_samples(&self) -> bool {
+        self.temperature_sample_mask == (1 << NUM_TERMISTORS) - 1
+    }
+
+    pub fn seen_cell_sample_mask(&self) -> u16 {
+        self.seen_cell_sample_mask
+    }
+
+    pub fn seen_temperature_sample_mask(&self) -> u16 {
+        self.seen_temperature_sample_mask
+    }
+
+    pub fn measurement_count(&self) -> u32 {
+        self.measurement_count
     }
 
     pub fn avg_volt(&self) -> u16 {
@@ -252,11 +316,19 @@ impl SLAVEBMS {
     }
 
     pub fn cell_volts(&self, i: usize) -> u16 {
-        self.bms_history[self.index].cell_volts[i]
+        if self.cell_sample_mask & (1 << i) != 0 {
+            return self.bms_history[self.index].cell_volts[i];
+        }
+        let latest = (self.index + NUM_HISTORY - 1) % NUM_HISTORY;
+        self.bms_history[latest].cell_volts[i]
     }
 
     pub fn temps(&self, i: usize) -> u16 {
-        self.bms_history[self.index].temperatures[i]
+        if self.temperature_sample_mask & (1 << i) != 0 {
+            return self.bms_history[self.index].temperatures[i];
+        }
+        let latest = (self.index + NUM_HISTORY - 1) % NUM_HISTORY;
+        self.bms_history[latest].temperatures[i]
     }
 
     pub fn update_current(&mut self, value: i32) {

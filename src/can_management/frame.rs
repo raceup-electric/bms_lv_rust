@@ -1,54 +1,49 @@
-use embassy_stm32::can::{frame::Envelope, Frame, Id, StandardId};
+use embassy_stm32::can::frame::{Envelope, Frame};
+use embedded_can::Id;
 
 #[derive(Clone)]
 pub struct CanFrame {
     id: u16,
     data: [u8; 8],
-    _len: usize,
-    frame: Frame
+    frame: Frame,
 }
 
 impl CanFrame {
     pub fn new(id: u16, data: &[u8]) -> Self {
-        let mut frame_data = [0u8; 8]; 
-        let _len = data.len().min(8);
+        let mut frame_data = [0u8; 8];
+        let len = data.len().min(8);
 
-        frame_data[.._len].copy_from_slice(&data[.._len]);
+        frame_data[..len].copy_from_slice(&data[..len]);
 
-        let tx_frame = Frame::new_data(
-            StandardId::new(id as _).unwrap(),
-            data,
-        ).unwrap();
+        let tx_frame = Frame::new_standard(id, &frame_data[..len]).unwrap();
 
-        CanFrame {
+        Self {
             id,
             data: frame_data,
-            _len,
-            frame: tx_frame
+            frame: tx_frame,
         }
     }
 
     pub fn from_envelope(envelope: Envelope) -> Self {
-        let rx_frame = envelope.frame;
-        let mut frame_data = [0u8; 8]; 
+        let (rx_frame, _) = envelope.parts();
+        let mut frame_data = [0u8; 8];
         let len: usize = rx_frame.header().len().min(8) as usize;
 
         frame_data[..len].copy_from_slice(&rx_frame.data()[..len]);
 
-        let id = match rx_frame.id() {
-            Id::Standard(id) => id.as_raw(), 
-            Id::Extended(id) => id.standard_id().as_raw(), 
+        let id = match *rx_frame.id() {
+            Id::Standard(id) => id.as_raw(),
+            Id::Extended(id) => id.as_raw() as u16,
         };
 
-        CanFrame {
+        Self {
             id,
             data: frame_data,
-            _len: rx_frame.header().len() as usize,
-            frame: rx_frame
+            frame: rx_frame,
         }
     }
 
-    pub fn frame(&self) -> Frame{
+    pub fn frame(&self) -> Frame {
         self.frame
     }
 
@@ -56,15 +51,7 @@ impl CanFrame {
         self.data
     }
 
-    pub fn _byte(&self, index: usize) -> u8 {
-        self.data[index]
-    }
-
     pub fn id(&self) -> u16 {
         self.id
-    }
-
-    pub fn _len(&self) -> usize {
-        self._len
     }
 }
