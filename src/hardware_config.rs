@@ -1,9 +1,3 @@
-#[cfg(feature = "ltc-hardware")]
-pub mod usb;
-
-#[cfg(feature = "ltc-hardware")]
-pub use usb::Serial;
-
 use embassy_stm32::time::Hertz;
 use embassy_stm32::Config;
 

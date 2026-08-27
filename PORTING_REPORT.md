@@ -3,7 +3,7 @@
 
 ## Summary
 
-The `bmslv` firmware now targets the STM32H563VI (`stm32h563vi`) with Embassy STM32 0.6, pinned to revision `a2b2a3e190a244df16a9a8ec03d7fb9d91d8297c` for reproducible builds. The application task structure, LTC6811 update and balancing state machine, CAN message encoding, fault timing, current calculation, and USB behavior remain intact.
+The `bmslv` firmware now targets the STM32H563VI (`stm32h563vi`) with Embassy STM32 0.6, pinned to revision `a2b2a3e190a244df16a9a8ec03d7fb9d91d8297c` for reproducible builds. The application task structure, LTC6811 update and balancing state machine, CAN message encoding, fault timing, and current calculation remain intact.
 
 Hardware configuration was reconciled against:
 
@@ -22,8 +22,8 @@ Hardware configuration was reconciled against:
 | `SCK` | PA5 | SPI1_SCK, AF5 | LTC6811 SPI clock | `src/main.rs`, `src/ltc_management/spi_device.rs` |
 | `MISO` | PA6 | SPI1_MISO, AF5 | LTC6811 SPI receive | `src/main.rs`, `src/ltc_management/spi_device.rs` |
 | `MOSI` | PA7 | SPI1_MOSI, AF5 | LTC6811 SPI transmit | `src/main.rs`, `src/ltc_management/spi_device.rs` |
-| `usb-` | PA11 | USB_DM, AF10 | USB CDC | `src/usb_serial/usb.rs` |
-| `usb+` | PA12 | USB_DP, AF10 | USB CDC | `src/usb_serial/usb.rs` |
+| `usb-` | PA11 | USB_DM, AF10 | Reserved; not initialized by the application | — |
+| `usb+` | PA12 | USB_DP, AF10 | Reserved; not initialized by the application | — |
 | `CAN_RXD` | PD0 | FDCAN1_RX, AF9 | CAN receive | `src/can_management/can_controller.rs` |
 | `CAN_TXD` | PD1 | FDCAN1_TX, AF9 | CAN transmit | `src/can_management/can_controller.rs` |
 | `TEMPERATURE` | PB12 | GPIO output | Temperature fault LED | `src/main.rs` |
@@ -32,7 +32,7 @@ Hardware configuration was reconciled against:
 | `DEnable` | PB15 | GPIO output | Fault/error enable output | `src/main.rs` |
 | `TMS/SWDIO` | PA13 | AF0 debug | SWD programming/debugging, left to reset/debug configuration | — |
 | `TCK/SWCLK` | PA14 | AF0 debug | SWD programming/debugging, left to reset/debug configuration | — |
-| HSE crystal | PH0/PH1 | OSC_IN/OSC_OUT | 12 MHz external crystal | `src/usb_serial/mod.rs` |
+| HSE crystal | PH0/PH1 | OSC_IN/OSC_OUT | 12 MHz external crystal | `src/hardware_config.rs` |
 
 Embassy selects the alternate functions through its typed pin traits. The STM32H563VI metadata confirms ADC1 channel 1 on PA1, FDCAN1 AF9 on PD0/PD1, and USB AF10 on PA11/PA12. PA4 and PB12–PB15 are ordinary push-pull outputs and therefore do not use an alternate function.
 
@@ -62,10 +62,10 @@ The Rust RCC configuration mirrors the SMU clock setup:
 | PLL2 VCO | 6 MHz × 60 | 360 MHz |
 | FDCAN kernel | PLL2 Q (/9) | 40 MHz |
 | ADC/DAC kernel | PLL2 R (/6) | 60 MHz |
-| USB kernel | HSI48 with USB synchronization | 48 MHz |
+| HSI48 | Enabled with USB synchronization | 48 MHz |
 | LPTIM2 kernel | PCLK1 | 250 MHz |
 
-Voltage scale 0 is selected. Embassy programs the required flash wait states while switching clocks; this corresponds to the SMU HAL's explicit `FLASH_LATENCY_5`. `Hsi48Config { sync_from_usb: true }` enables the HSI48/USB synchronization behavior corresponding to SMU's CRS setup. Embassy peripheral constructors perform the RCC enables and resets for ADC1, FDCAN1, SPI1, GPDMA1, GPIO banks, and USB. USB initialization also enables the H5 USB supply path through the Embassy USB backend.
+Voltage scale 0 is selected. Embassy programs the required flash wait states while switching clocks; this corresponds to the SMU HAL's explicit `FLASH_LATENCY_5`. `Hsi48Config { sync_from_usb: true }` retains the SMU CRS-compatible HSI48 setup, although the application does not initialize USB. Embassy peripheral constructors perform the RCC enables and resets for ADC1, FDCAN1, SPI1, GPDMA1, and the GPIO banks.
 
 ADC1 uses the SMU peripheral clock selection and acquisition settings: PLL2_R at 60 MHz, asynchronous divide-by-4, 12-bit conversion, and a 92.5-cycle sample time. The application retains polling reads because changing current sensing to a DMA window would alter its original averaging/update behavior.
 
@@ -76,17 +76,16 @@ FDCAN1 uses the SMU 40 MHz kernel clock and a 1 Mbit/s nominal rate. Embassy cal
 | Driver/integration | Location | Implementation |
 |---|---|---|
 | STM32H563VI startup, task wiring, ADC and GPIO | `src/main.rs` | Embassy executor, ADC, GPIO, GPDMA interrupt bindings |
-| RCC/PWR/peripheral clock tree | `src/usb_serial/mod.rs` | Embassy STM32 RCC configuration translated from SMU |
+| RCC/PWR/peripheral clock tree | `src/hardware_config.rs` | Embassy STM32 RCC configuration translated from SMU |
 | FDCAN1 controller | `src/can_management/can_controller.rs` | Embassy FDCAN configurator and async transmit/receive |
 | CAN frame adapter | `src/can_management/frame.rs` | Application frame type to Embassy classic CAN frame conversion |
 | SPI1/GPDMA transport | `src/ltc_management/spi_device.rs` | Embassy async SPI master with GPDMA1 CH0/CH1 |
 | LTC6811 driver/state machine | `src/ltc_management/ltc6811.rs` | Existing logic retained on the new SPI transport |
-| USB CDC serial | `src/usb_serial/usb.rs` | Embassy STM32 USB FS and Embassy USB CDC ACM |
 | Memory/link integration | `memory.x`, `build.rs` | 2 MiB flash, 640 KiB SRAM, aligned text placement |
 
 ## Logic changes required by STM32H563VI
 
-- Replaced STM32F4/H7-style peripheral names and DMA channels with STM32H5 FDCAN1, USB, and GPDMA1 resources.
+- Replaced STM32F4/H7-style peripheral names and DMA channels with STM32H5 FDCAN1 and GPDMA1 resources.
 - Moved CAN to KiCad pins PD0/PD1, avoiding the PA11/PA12 USB pair.
 - Moved fault/status outputs from provisional PC/PA pins to KiCad pins PB12–PB15.
 - Updated ADC ownership and sample-time calls for Embassy's H5 ADC API.
@@ -96,7 +95,7 @@ FDCAN1 uses the SMU 40 MHz kernel clock and a 1 Mbit/s nominal rate. Embassy cal
 
 ## HAL and Embassy gaps
 
-No PAC-only peripheral driver was required. Embassy STM32 currently provides the necessary STM32H563VI ADC, FDCAN, SPI/GPDMA, GPIO, RCC, time-driver, and USB Device FS support.
+The current-sense conversion uses a minimal PAC polling helper after Embassy configures and calibrates ADC1. Embassy STM32 provides the remaining STM32H563VI FDCAN, SPI/GPDMA, GPIO, RCC, and time-driver support used by the application.
 
 The relevant integration differences were API-level rather than missing hardware support:
 
@@ -122,7 +121,7 @@ Both development and release builds complete without compiler or linker warnings
 
 ### LTC-independent diagnostic firmware
 
-- Temporary LTC-independent firmware variants were used during bring-up and have been removed. The single supported build always initializes ADC, FDCAN, USB, SPI1, and LTC6811.
+- Temporary LTC-independent firmware variants were used during bring-up and have been removed. The single supported build initializes ADC, FDCAN, SPI1, and LTC6811.
 - This stricter isolation followed a hardware test in which excluding only LTC6811 did not produce an executor heartbeat, proving the observed stall was not uniquely attributable to LTC6811.
 - PB14 is driven by an independent 250 ms heartbeat task. A steady PB14 after reset means the executor is not scheduling the heartbeat; regular blinking proves task scheduling without relying on the LTC6811.
 - PB15 (`DEnable`) remains high for the complete isolated run. PB12 and PB13 are held low.
@@ -188,6 +187,7 @@ Both development and release builds complete without compiler or linker warnings
 - Current sensing retains its original polling and software averaging loop. GPDMA is not used for this single channel because converting it to DMA would change the update behavior; GPDMA1 channels 0 and 1 remain dedicated to SPI1 TX/RX.
 - Replaced the obsolete LEM conversion with the fitted ACS773LCB-100B transfer function. At 3.3 V its nominal sensitivity is 13.2 mV/A and its zero-current output is VCC/2. Conversion is performed ratiometrically as ADC-count delta divided by 16.38 counts/A, preserving the existing internal 0.1 mA and CAN 0.01 A units.
 - PB15 remains low during a 2-second analog settling interval and a 512-sample zero-current calibration. The fault task may assert PB15 only after calibration completes and all voltage/temperature faults are clear, preventing the enabled 48 V/LTC load from biasing the baseline.
+- PB15 is asserted only after voltage and temperature inputs have remained continuously valid for an additional 1 second. Any invalid sample or active fault resets this confirmation delay.
 - LTC initialization, reference enablement, SPI activity, and voltage/temperature conversions now wait for completion of the ACS773 zero calibration. Their active consumption is therefore measured as current instead of being absorbed into the zero baseline.
 - Hardware averaging is explicitly disabled instead of relying on the ADC reset state.
 - Embassy owns ADC RCC, clock setup, regulator startup, calibration, and peripheral ownership. Current conversions use the validated minimal PAC polling path for STM32H563 channel setup and reads. Async ADC/DMA was not adopted because it would consume another DMA channel and change the existing single-channel averaging timing.
@@ -205,11 +205,10 @@ Both development and release builds complete without compiler or linker warnings
 
 ### Cleanup
 
-- Removed runtime defmt logging, the USB defmt logger, unused SPI methods, an unused BMS constructor, an unused temperature counter, and unused direct dependencies.
-- Retained the hardware-investigation CAN frames used to validate LTC, current sensing, and ADC configuration.
+- Removed runtime logging, USB diagnostic serial support, temporary CAN diagnostics, unused SPI methods, unused BMS diagnostic counters, and unused direct dependencies.
 - Corrected the compilation target from Cortex-M7 to the STM32H563 Cortex-M33 target `thumbv8m.main-none-eabihf`.
 - Retained `memory.x` because `build.rs` installs it in the linker search path and `link.x` uses it to place flash, RAM, the vector table, and program text.
-- Retained the `ltc-hardware` feature and the hardware-enabled initialization path.
+- Removed the `ltc-hardware` feature and conditional paths. LTC hardware is always initialized; the unused USB diagnostic path is not part of the operational build.
 
 ### Peripheral timing
 
@@ -217,6 +216,6 @@ Both development and release builds complete without compiler or linker warnings
 - FDCAN1 kernel clock is 40 MHz from PLL2_Q.
 - ADC kernel clock is 60 MHz from PLL2_R and ADC conversion clock is 15 MHz after divide-by-4.
 - SPI1 kernel clock is PLL1_Q at 250 MHz; Embassy selects a hardware divider for the configured 1 MHz SPI bus.
-- USB uses synchronized HSI48 at 48 MHz.
+- HSI48 remains configured at 48 MHz; USB is not initialized by the operational firmware.
 - LPTIM2 uses PCLK1 at 250 MHz; Embassy owns the active executor time-driver timer and its interrupt configuration.
 - GPDMA request 7 drives SPI1 TX on channel 0 and request 6 drives SPI1 RX on channel 1.

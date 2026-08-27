@@ -19,9 +19,6 @@ pub struct SLAVEBMS {
     cell_data_valid: bool,
     cell_sample_mask: u16,
     temperature_sample_mask: u16,
-    seen_cell_sample_mask: u16,
-    seen_temperature_sample_mask: u16,
-    measurement_count: u32,
 }
 
 #[derive(Default, Debug, Copy, Clone)]
@@ -160,9 +157,6 @@ impl SLAVEBMS {
             cell_data_valid: false,
             cell_sample_mask: 0,
             temperature_sample_mask: 0,
-            seen_cell_sample_mask: 0,
-            seen_temperature_sample_mask: 0,
-            measurement_count: 0,
         }
     }
 
@@ -238,19 +232,16 @@ impl SLAVEBMS {
         if self.index >= NUM_HISTORY {
             self.index = 0;
         }
-        self.measurement_count = self.measurement_count.wrapping_add(1);
     }
 
     pub fn update_temp(&mut self, i: usize, value: u16) {
         self.bms_history[self.index].update_temp(i, value);
         self.temperature_sample_mask |= 1 << i;
-        self.seen_temperature_sample_mask |= 1 << i;
     }
 
     pub fn update_cell(&mut self, i: usize, value: u16) {
         self.bms_history[self.index].update_cell(i, value);
         self.cell_sample_mask |= 1 << i;
-        self.seen_cell_sample_mask |= 1 << i;
     }
 
     pub fn begin_measurement_cycle(&mut self) {
@@ -272,18 +263,6 @@ impl SLAVEBMS {
 
     pub fn has_all_temperature_samples(&self) -> bool {
         self.temperature_sample_mask == (1 << NUM_TERMISTORS) - 1
-    }
-
-    pub fn seen_cell_sample_mask(&self) -> u16 {
-        self.seen_cell_sample_mask
-    }
-
-    pub fn seen_temperature_sample_mask(&self) -> u16 {
-        self.seen_temperature_sample_mask
-    }
-
-    pub fn measurement_count(&self) -> u32 {
-        self.measurement_count
     }
 
     pub fn avg_volt(&self) -> u16 {

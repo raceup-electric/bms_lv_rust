@@ -5,6 +5,4 @@ runner = "sh post_build.sh"
 target = "thumbv8m.main-none-eabihf"
 
 [env]
-EMBASSY_USB_MAX_INTERFACE_COUNT        = "16"
-EMBASSY_USB_MAX_HANDLER_COUNT          = "16"
-EMBASSY_EXECUTOR_TASK_ARENA_SIZE       = "30000"
+EMBASSY_EXECUTOR_TASK_ARENA_SIZE = "30000"

@@ -74,20 +74,6 @@ pub struct LTC6811 {
     config: [u8; 6],
     mode: MODE,
     prev_mode: MODE,
-    diagnostics: LtcDiagnostics,
-}
-
-#[derive(Clone, Copy, Default)]
-pub struct LtcDiagnostics {
-    pub config_valid: bool,
-    pub cell_pec_valid: bool,
-    pub auxa_pec_valid: bool,
-    pub auxb_pec_valid: bool,
-    pub cell_group: u8,
-    pub received_pec: u16,
-    pub calculated_pec: u16,
-    pub cell_pec_errors: u8,
-    pub aux_pec_errors: u8,
 }
 
 const NUM_THERMISTORS: usize = 12;
@@ -107,7 +93,6 @@ impl LTC6811 {
             config,
             mode: MODE::NORMAL,
             prev_mode: MODE::NORMAL,
-            diagnostics: LtcDiagnostics::default(),
         }
     }
 
@@ -178,7 +163,7 @@ impl LTC6811 {
         let mut spi_data = self.spi.lock().await;
         spi_data.cmd_read(&cmd, &mut read_config).await.unwrap();
         drop(spi_data);
-        self.diagnostics.config_valid = read_config[..6] == self.config
+        let _config_valid = read_config[..6] == self.config
             && read_config[6..8] == self.calculate_pec(&read_config[..6]);
 
         Ok(())
@@ -265,21 +250,9 @@ impl LTC6811 {
 
         drop(spi_data);
 
-        let groups = [&data_a, &data_b, &data_c, &data_d];
-        let mut all_groups_valid = true;
-        for (group, data) in groups.into_iter().enumerate() {
-            let calculated = self.calculate_pec(&data[..6]);
-            let received = [data[6], data[7]];
-            self.diagnostics.cell_group = group as u8;
-            self.diagnostics.received_pec = u16::from_be_bytes(received);
-            self.diagnostics.calculated_pec = u16::from_be_bytes(calculated);
-            let valid = received == calculated;
-            all_groups_valid &= valid;
-            if !valid {
-                self.diagnostics.cell_pec_errors = self.diagnostics.cell_pec_errors.wrapping_add(1);
-            }
-        }
-        self.diagnostics.cell_pec_valid = all_groups_valid;
+        let all_groups_valid = [&data_a, &data_b, &data_c, &data_d]
+            .into_iter()
+            .all(|data| data[6..8] == self.calculate_pec(&data[..6]));
 
         let mut cells: [u16; 12] = [0; 12];
         cells[0] = ((data_a[1] as u16) << 8) | (data_a[0] as u16);
@@ -421,17 +394,6 @@ impl LTC6811 {
 
             drop(spi_data);
 
-            let pec_a = [auxa[6], auxa[7]];
-            self.diagnostics.auxa_pec_valid = pec_a == self.calculate_pec(&auxa[0..6]);
-            if !self.diagnostics.auxa_pec_valid {
-                self.diagnostics.aux_pec_errors = self.diagnostics.aux_pec_errors.wrapping_add(1);
-            }
-            let pec_b = [auxb[6], auxb[7]];
-            self.diagnostics.auxb_pec_valid = pec_b == self.calculate_pec(&auxb[0..6]);
-            if !self.diagnostics.auxb_pec_valid {
-                self.diagnostics.aux_pec_errors = self.diagnostics.aux_pec_errors.wrapping_add(1);
-            }
-
             let code = u16::from_be_bytes([auxa[1], auxa[0]]);
             let vref = u16::from_be_bytes([auxb[5], auxb[4]]);
 
@@ -475,9 +437,5 @@ impl LTC6811 {
             }
         }
         false
-    }
-
-    pub fn diagnostics(&self) -> LtcDiagnostics {
-        self.diagnostics
     }
 }
