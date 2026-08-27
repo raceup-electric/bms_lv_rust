@@ -20,7 +20,7 @@ pub const PLADC: [u8; 2] = [0x07, 0x14];
 pub const WRCOMM: [u8; 2] = [0x07, 0x21];
 pub const STCOMM: [u8; 2] = [0x07, 0x23];
 
-const RTHERMISTOR_OHM: u32 = 22_000;
+const THERMISTOR_PULLUP_OHM: u32 = 10_000;
 const R25: f32 = 9.914;
 const B_COEFF: f32 = 3435.0;
 const KELVIN_2_CELSIUS: f32 = 273.15;
@@ -180,6 +180,7 @@ impl LTC6811 {
         drop(spi_data);
         self.diagnostics.config_valid = read_config[..6] == self.config
             && read_config[6..8] == self.calculate_pec(&read_config[..6]);
+
         Ok(())
     }
 
@@ -329,13 +330,13 @@ impl LTC6811 {
         Ok(())
     }
 
-    pub fn parse_temp(&self, voltage_gpio: u16, _voltage_ref: u16) -> u16 {
-        if voltage_gpio == 0 {
+    pub fn parse_temp(&self, voltage_gpio: u16, voltage_ref: u16) -> u16 {
+        if voltage_gpio == 0 || voltage_ref <= voltage_gpio {
             return u16::MAX;
         }
 
-        let r_th = (RTHERMISTOR_OHM as f32) * (voltage_gpio as f32) * 0.1
-            / ((_voltage_ref as f32) * 0.1 - ((voltage_gpio as f32) * 0.1));
+        let r_th = (THERMISTOR_PULLUP_OHM as f32) * (voltage_gpio as f32)
+            / ((voltage_ref - voltage_gpio) as f32);
 
         let inv_t =
             1f32 / (KELVIN_2_CELSIUS + 25f32) + (1f32 / B_COEFF) * logf((r_th / 1000f32) / R25);
@@ -419,7 +420,7 @@ impl LTC6811 {
             spi_data.cmd_read(&cmd_b, &mut auxb).await.unwrap();
 
             drop(spi_data);
-batte
+
             let pec_a = [auxa[6], auxa[7]];
             self.diagnostics.auxa_pec_valid = pec_a == self.calculate_pec(&auxa[0..6]);
             if !self.diagnostics.auxa_pec_valid {

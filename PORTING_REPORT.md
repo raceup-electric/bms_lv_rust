@@ -3,7 +3,7 @@
 
 ## Summary
 
-The `bmslv` firmware now targets the STM32H563VI (`stm32h563vi`) with Embassy STM32 0.6, pinned to revision `a2b2a3e190a244df16a9a8ec03d7fb9d91d8297c` for reproducible builds. The application task structure, LTC6811 update and balancing state machine, CAN message encoding, fault timing, current calculation, and USB logging behavior remain intact.
+The `bmslv` firmware now targets the STM32H563VI (`stm32h563vi`) with Embassy STM32 0.6, pinned to revision `a2b2a3e190a244df16a9a8ec03d7fb9d91d8297c` for reproducible builds. The application task structure, LTC6811 update and balancing state machine, CAN message encoding, fault timing, current calculation, and USB behavior remain intact.
 
 Hardware configuration was reconciled against:
 
@@ -22,8 +22,8 @@ Hardware configuration was reconciled against:
 | `SCK` | PA5 | SPI1_SCK, AF5 | LTC6811 SPI clock | `src/main.rs`, `src/ltc_management/spi_device.rs` |
 | `MISO` | PA6 | SPI1_MISO, AF5 | LTC6811 SPI receive | `src/main.rs`, `src/ltc_management/spi_device.rs` |
 | `MOSI` | PA7 | SPI1_MOSI, AF5 | LTC6811 SPI transmit | `src/main.rs`, `src/ltc_management/spi_device.rs` |
-| `usb-` | PA11 | USB_DM, AF10 | USB CDC/defmt | `src/usb_serial/usb.rs` |
-| `usb+` | PA12 | USB_DP, AF10 | USB CDC/defmt | `src/usb_serial/usb.rs` |
+| `usb-` | PA11 | USB_DM, AF10 | USB CDC | `src/usb_serial/usb.rs` |
+| `usb+` | PA12 | USB_DP, AF10 | USB CDC | `src/usb_serial/usb.rs` |
 | `CAN_RXD` | PD0 | FDCAN1_RX, AF9 | CAN receive | `src/can_management/can_controller.rs` |
 | `CAN_TXD` | PD1 | FDCAN1_TX, AF9 | CAN transmit | `src/can_management/can_controller.rs` |
 | `TEMPERATURE` | PB12 | GPIO output | Temperature fault LED | `src/main.rs` |
@@ -82,7 +82,6 @@ FDCAN1 uses the SMU 40 MHz kernel clock and a 1 Mbit/s nominal rate. Embassy cal
 | SPI1/GPDMA transport | `src/ltc_management/spi_device.rs` | Embassy async SPI master with GPDMA1 CH0/CH1 |
 | LTC6811 driver/state machine | `src/ltc_management/ltc6811.rs` | Existing logic retained on the new SPI transport |
 | USB CDC serial | `src/usb_serial/usb.rs` | Embassy STM32 USB FS and Embassy USB CDC ACM |
-| USB defmt logger | `src/usb_serial/log.rs` | Existing defmt framing over CDC queue |
 | Memory/link integration | `memory.x`, `build.rs` | 2 MiB flash, 640 KiB SRAM, aligned text placement |
 
 ## Logic changes required by STM32H563VI
@@ -108,7 +107,7 @@ The relevant integration differences were API-level rather than missing hardware
 
 ## Verification
 
-The following checks pass for `thumbv7em-none-eabihf`:
+The following checks pass for `thumbv8m.main-none-eabihf`:
 
 ```text
 cargo fmt --all -- --check
@@ -123,11 +122,10 @@ Both development and release builds complete without compiler or linker warnings
 
 ### LTC-independent diagnostic firmware
 
-- The default build now excludes ADC, FDCAN, USB, SPI1, and LTC6811 construction, while preserving the complete hardware path behind the `ltc-hardware` Cargo feature.
+- Temporary LTC-independent firmware variants were used during bring-up and have been removed. The single supported build always initializes ADC, FDCAN, USB, SPI1, and LTC6811.
 - This stricter isolation followed a hardware test in which excluding only LTC6811 did not produce an executor heartbeat, proving the observed stall was not uniquely attributable to LTC6811.
 - PB14 is driven by an independent 250 ms heartbeat task. A steady PB14 after reset means the executor is not scheduling the heartbeat; regular blinking proves task scheduling without relying on the LTC6811.
 - PB15 (`DEnable`) remains high for the complete isolated run. PB12 and PB13 are held low.
-- Restore the full LTC path with `cargo run --features ltc-hardware` after isolation testing.
 - The GPIO/executor-only hardware test passed: PB14 blinked, PB12/PB13 remained low, and PB15 remained high. This verifies firmware boot, Embassy RCC initialization, executor scheduling, the time driver, and GPIO operation. The PB13 illumination during DFU was confirmed as hardware reset-state behavior.
 - The next default diagnostic layer enables only FDCAN1 in addition to the proven GPIO heartbeat. It transmits standard identifier `0x123` with payload `48 35 63 61 6e` every 200 ms; ADC, USB, SPI, and LTC remain excluded.
 - The isolated FDCAN test passed on hardware and produced SocketCAN traffic, validating the 40 MHz kernel clock, 1 Mbit/s bit timing, PD0/PD1 routing, interrupts, transmit path, and PB15 enable state.
@@ -161,7 +159,7 @@ Both development and release builds complete without compiler or linker warnings
 - Temperature fault output PB12 asserts after the existing 450 ms debounce when a temperature is missing or invalid.
 - Debug fault output PB14 now toggles during any active voltage or temperature fault. The previous code incorrectly toggled PB12, conflating the debug blink with the temperature indication.
 - Voltage and temperature outputs initialize low. PB14 is handled by the staged boot marker described below.
-- PB14 now also acts as a staged boot marker. A minimal PAC routine asserts it before `embassy_stm32::init()`. Embassy then keeps it solid high throughout peripheral and LTC initialization, clears it immediately before spawning the LTC update task, and subsequently uses it for the normal active-fault blink. Solid high therefore indicates a stall before task startup; blinking indicates the fault task is running; low indicates task startup completed with no active fault. Hardware validation is pending.
+- PB14 is asserted before Embassy initialization and then follows the operational fault indication.
 - Hardware showed PB13 transitioning low while PB14 remained solid high after reset, localizing the stall to LTC6811 initialization after RCC/GPIO setup. LTC initialization was moved out of `main` and into the LTC task so a stalled SPI/LTC device cannot prevent the executor, CAN RX, and remaining tasks from starting. PB14 now clears only after LTC initialization returns. Hardware validation is pending.
 - Hardware safety defaults are now asserted immediately: PB12 and PB13 start high, while PB15 (`DEnable`) starts low. They cannot briefly indicate a healthy system before sensor validation.
 - PB14 follows the required polarity: it stays high when no fault is active and toggles when a debounced voltage or temperature fault is active.
@@ -175,11 +173,9 @@ Both development and release builds complete without compiler or linker warnings
 - The existing mux selection, AUX conversion, PEC check, parsing, history update, and CAN temperature-frame sequence remain structurally unchanged.
 - Corrected technical CAN accessors to read the most recently completed history slot rather than the newly advanced empty slot. Valid LTC readings therefore no longer appear as default zeros after `SLAVEBMS::update()`.
 - Each LTC cycle now clears and rebuilds 12-bit cell and thermistor sample masks. Fault evaluation requires a complete mask, so default values and partial/timed-out cycles cannot be treated as measurements.
-- Cell and AUX PEC mismatches are reported through defmt but do not suppress raw diagnostic values. Strict rejection was reverted after hardware testing showed it hid the previously visible maximum cell ADC readings and left all diagnostic masks at zero. PEC enforcement remains pending correction of the LTC transaction/alignment path.
+- Cell PEC validation controls whether cell data is accepted for SOC estimation. Temperature acquisition retains its established raw AUX handling.
 - CAN temperature frame `0x220` now sets the DBC-defined `fault_temp_lv` signal at bit 30 (byte 3, bit 6) from the temperature fault state.
 - CAN error frame `0x05A` retains its original contract: byte 0 bit 0 is one when either the voltage or temperature fault is active.
-- New diagnostic frame `0x05B` reports the current LTC acquisition state: bytes 0-1 are the 12-cell sample mask, bytes 2-3 are the 12-temperature sample mask, and bytes 4-7 are the little-endian count of fully completed LTC measurement cycles. The existing `0x2F8-0x2FD` frames carry all raw cell and temperature values.
-- Diagnostic masks are cumulative since boot, so a valid LTC group remains observable even if a later conversion times out. Technical frames expose samples already accepted in the current partial cycle instead of hiding them until the entire voltage-plus-temperature cycle completes.
 - Replaced the placeholder mux encoding with the LTC1380 SMBus send-byte protocol. U1 uses strapped write address `0x90`, U2 uses `0x94`, and each command sends `EN=1` plus the three-bit channel.
 - Corrected LTC6811 `WRCOMM` to `0x0721` and `STCOMM` to `0x0723`, appended the required COMM data PEC, and supplies 72 clock pulses after STCOMM while CS remains low.
 - GPIO4/SDA and GPIO5/SCL are both released high in CFGR0 as required for the LTC6811 open-drain I2C master.
@@ -192,20 +188,28 @@ Both development and release builds complete without compiler or linker warnings
 - Current sensing retains its original polling and software averaging loop. GPDMA is not used for this single channel because converting it to DMA would change the update behavior; GPDMA1 channels 0 and 1 remain dedicated to SPI1 TX/RX.
 - Replaced the obsolete LEM conversion with the fitted ACS773LCB-100B transfer function. At 3.3 V its nominal sensitivity is 13.2 mV/A and its zero-current output is VCC/2. Conversion is performed ratiometrically as ADC-count delta divided by 16.38 counts/A, preserving the existing internal 0.1 mA and CAN 0.01 A units.
 - PB15 remains low during a 2-second analog settling interval and a 512-sample zero-current calibration. The fault task may assert PB15 only after calibration completes and all voltage/temperature faults are clear, preventing the enabled 48 V/LTC load from biasing the baseline.
-- Diagnostic frame `0x05C` contains the ACS773 offset ADC count, live averaged ADC count, signed delta in Q8 count units, and signed current in 0.01 A units. This exposes sub-count motion hidden by the production signal's quantization.
+- LTC initialization, reference enablement, SPI activity, and voltage/temperature conversions now wait for completion of the ACS773 zero calibration. Their active consumption is therefore measured as current instead of being absorbed into the zero baseline.
+- Hardware averaging is explicitly disabled instead of relying on the ADC reset state.
+- Embassy owns ADC RCC, clock setup, regulator startup, calibration, and peripheral ownership. Current conversions use the validated minimal PAC polling path for STM32H563 channel setup and reads. Async ADC/DMA was not adopted because it would consume another DMA channel and change the existing single-channel averaging timing.
 
 ### State of charge
 
 - Added a compact voltage-to-SOC lookup table for the 12s3p Molicel INR-21700-P50B pack, with linear interpolation from 30.0 V/0% to 50.4 V/100%.
 - CAN frame `0x21E` retains signed current in bytes 0-1 and now carries estimated remaining energy in bytes 2-3 using the DBC scale of 0.1 Wh per bit. Full-scale energy is 648 Wh; the field is zero until all LTC cell register groups pass PEC validation.
+- The last valid cell-data state is retained while the next acquisition is in progress, preventing `remaining_energy` from alternating between zero and the measured estimate. A completed cell acquisition with invalid PEC still invalidates the estimate.
+- Extended CAN frame `0x21E` to five bytes. Byte 4 carries SOC percentage with a scale of 1% per bit; the complete message definition is in `dbc/can2.dbc`.
+
+### Temperature conversion
+
+- Corrected the thermistor-divider pull-up from 22 kOhm to the schematic value of 10 kOhm and reject conversions where VREF2 is not greater than the selected thermistor voltage.
 
 ### Cleanup
 
 - Removed runtime defmt logging, the USB defmt logger, unused SPI methods, an unused BMS constructor, an unused temperature counter, and unused direct dependencies.
-- Retained diagnostic CAN frames `0x05B`, `0x05C`, and `0x05D`.
+- Retained the hardware-investigation CAN frames used to validate LTC, current sensing, and ADC configuration.
 - Corrected the compilation target from Cortex-M7 to the STM32H563 Cortex-M33 target `thumbv8m.main-none-eabihf`.
 - Retained `memory.x` because `build.rs` installs it in the linker search path and `link.x` uses it to place flash, RAM, the vector table, and program text.
-- Diagnostic frame `0x05D` contains LTC configuration/cell/AUX PEC validity, latest cell group, received and calculated cell PEC values, and wrapping cell/AUX PEC error counters.
+- Retained the `ltc-hardware` feature and the hardware-enabled initialization path.
 
 ### Peripheral timing
 

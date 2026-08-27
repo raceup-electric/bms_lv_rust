@@ -20,6 +20,11 @@ pub fn remaining_energy_deci_wh(total_voltage_100uv: u32) -> u16 {
     ((PACK_ENERGY_DECI_WH * soc_permille as u32) / 1_000) as u16
 }
 
+pub fn soc_percentage(total_voltage_100uv: u32) -> u8 {
+    let pack_mv = total_voltage_100uv / 10;
+    ((interpolate_soc(pack_mv) + 5) / 10) as u8
+}
+
 fn interpolate_soc(pack_mv: u32) -> u16 {
     if pack_mv <= SOC_TABLE[0].0 {
         return SOC_TABLE[0].1;

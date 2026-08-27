@@ -1,6 +1,6 @@
 pub mod can_controller;
 pub mod frame;
-use crate::types::soc::remaining_energy_deci_wh;
+use crate::types::soc::{remaining_energy_deci_wh, soc_percentage};
 use crate::types::SLAVEBMS;
 use crate::CanMsg;
 pub use can_controller::CanController;
@@ -62,16 +62,20 @@ pub async fn can_operation(
     }
 
     let current = (bms.current() / 100) as u16;
-    let remaining_energy = if bms.cell_data_valid() {
-        remaining_energy_deci_wh(bms.tot_volt())
+    let (remaining_energy, soc) = if bms.cell_data_valid() {
+        (
+            remaining_energy_deci_wh(bms.tot_volt()),
+            soc_percentage(bms.tot_volt()),
+        )
     } else {
-        0
+        (0, 0)
     };
     let current_frame = [
         get_byte!(current, 0),
         get_byte!(current, 1),
         get_byte!(remaining_energy, 0),
         get_byte!(remaining_energy, 1),
+        soc,
     ];
 
     let frame_send = CanFrame::new(CanMsg::CurrentId.as_raw(), &current_frame);

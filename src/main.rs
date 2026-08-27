@@ -2,10 +2,11 @@
 #![no_main]
 #![allow(clippy::too_many_arguments, clippy::upper_case_acronyms)]
 
-use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{Adc, AdcConfig, Clock, Resolution, SampleTime};
+use embassy_stm32::adc::{Adc, AdcConfig, Averaging, Clock, Resolution, VrefInt};
 use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_stm32::pac::adc::vals::SampleTime as PacSampleTime;
 use embassy_stm32::pac::adccommon::vals::Presc;
 use embassy_stm32::peripherals::{ADC1, PA1};
 use embassy_stm32::{bind_interrupts, dma, Peri};
@@ -41,6 +42,24 @@ static CURRENT_CALIBRATED: AtomicBool = AtomicBool::new(false);
 static CURRENT_OFFSET_Q8: AtomicI32 = AtomicI32::new(0);
 static CURRENT_AVERAGE_Q8: AtomicI32 = AtomicI32::new(0);
 static CURRENT_CENTIAMPS: AtomicI32 = AtomicI32::new(0);
+static ADC_VREFINT_RAW: AtomicI32 = AtomicI32::new(0);
+static ADC_VREF_MILLIVOLTS: AtomicI32 = AtomicI32::new(0);
+static ADC_INPUT_MILLIVOLTS: AtomicI32 = AtomicI32::new(0);
+static ADC_DR_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_ISR_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_CR_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_CFGR_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_SQR1_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_SMPR1_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_SMPR2_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_CCR_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_DIFSEL_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_CALFACT_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_GPIO_MODER_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_GPIO_PUPDR_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_RCC_CCIPR5_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_OR_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static ADC_CFGR2_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
 
 const ACS773_100B_COUNTS_PER_AMP: f32 = 4095.0 * 13.2 / 3300.0;
 
@@ -76,135 +95,64 @@ fn enable_early_debug_led() {
 async fn main(spawner: Spawner) -> ! {
     enable_early_debug_led();
     let p = embassy_stm32::init(prepare_config());
+    let adc_config = AdcConfig {
+        clock: Some(Clock::Async { div: Presc::Div4 }),
+        resolution: Some(Resolution::Bits12),
+        averaging: Some(Averaging::Disabled),
+    };
+    let current_adc: Adc<'static, ADC1> = Adc::new_with_config(p.ADC1, adc_config);
+    let current_pin = p.PA1;
 
-    #[cfg(not(feature = "ltc-hardware"))]
-    {
-        let debug_led = Output::new(p.PB14, Level::High, Speed::Low);
-        let temp_led = Output::new(p.PB12, Level::High, Speed::Low);
-        let voltage_led = Output::new(p.PB13, Level::High, Speed::Low);
-        let err_check = StaticCell::init(
-            &ERR_CHECK,
-            Mutex::new(Output::new(p.PB15, Level::Low, Speed::Low)),
-        );
-
-        let (can, can_rx) = CanController::new_fdcan1(p.FDCAN1, p.PD0, p.PD1, 1_000_000);
-        let can = StaticCell::init(&CAN, Mutex::new(can));
-        let bms = StaticCell::init(&BMS, Mutex::new(SLAVEBMS::new()));
-        let is_balance = StaticCell::init(&IS_BALANCE, Mutex::new(false));
-        let is_tech = StaticCell::init(&IS_TECH, Mutex::new(true));
-
-        let adc_config = AdcConfig {
-            clock: Some(Clock::Async { div: Presc::Div4 }),
-            resolution: Some(Resolution::Bits12),
-            ..Default::default()
-        };
-        let current_adc = Adc::new_with_config(p.ADC1, adc_config);
-        let current_pin = p.PA1;
-
-        spawner.spawn(current_sense(current_adc, current_pin, bms).unwrap());
-        spawner.spawn(send_can(bms, can, is_tech).unwrap());
-        spawner.spawn(read_can(is_balance, can_rx, is_tech).unwrap());
-
-        let spi = SpiDevice::new(
-            p.SPI1,
-            p.PA5,
-            p.PA7,
-            p.PA6,
-            p.PA4,
-            p.GPDMA1_CH0,
-            p.GPDMA1_CH1,
-            SpiIrqs,
-        )
-        .await;
-        let spi = StaticCell::init(&SPI, Mutex::new(spi));
-        let ltc = LTC6811::new(spi, bms).await;
-        let ltc = StaticCell::init(&LTC, Mutex::new(ltc));
-
-        spawner.spawn(
-            ltc_function(
-                bms,
-                ltc,
-                err_check,
-                can,
-                debug_led,
-                voltage_led,
-                temp_led,
-                is_balance,
-            )
-            .unwrap(),
-        );
-        core::future::pending::<()>().await;
-        unreachable!();
-    }
+    let (can, can_rx) = CanController::new_fdcan1(p.FDCAN1, p.PD0, p.PD1, 1_000_000);
+    let can = StaticCell::init(&CAN, Mutex::new(can));
+    let bms = StaticCell::init(&BMS, Mutex::new(SLAVEBMS::new()));
+    let is_balance = StaticCell::init(&IS_BALANCE, Mutex::new(false));
+    let is_tech = StaticCell::init(&IS_TECH, Mutex::new(true));
 
     #[cfg(feature = "ltc-hardware")]
-    {
-        let adc_config = AdcConfig {
-            clock: Some(Clock::Async { div: Presc::Div4 }),
-            resolution: Some(Resolution::Bits12),
-            ..Default::default()
-        };
-        let current_adc: Adc<'static, ADC1> = Adc::new_with_config(p.ADC1, adc_config);
-        let current_pin = p.PA1;
+    Serial::init(p.USB, p.PA12, p.PA11, &spawner);
 
-        let (can, can_rx) = CanController::new_fdcan1(p.FDCAN1, p.PD0, p.PD1, 1_000_000);
-        let can = StaticCell::init(&CAN, Mutex::new(can));
+    let debug_led = Output::new(p.PB14, Level::High, Speed::Low);
+    let temp_led = Output::new(p.PB12, Level::High, Speed::Low);
+    let voltage_led = Output::new(p.PB13, Level::High, Speed::Low);
+    let err_check = StaticCell::init(
+        &ERR_CHECK,
+        Mutex::new(Output::new(p.PB15, Level::Low, Speed::Low)),
+    );
 
-        Serial::init(p.USB, p.PA12, p.PA11, &spawner);
+    spawner.spawn(current_sense(current_adc, current_pin, bms).unwrap());
+    spawner.spawn(send_can(bms, can, is_tech).unwrap());
+    spawner.spawn(read_can(is_balance, can_rx, is_tech).unwrap());
 
-        let debug_led = Output::new(p.PB14, Level::High, Speed::Low);
-        let temp_led = Output::new(p.PB12, Level::High, Speed::Low);
-        let voltage_led = Output::new(p.PB13, Level::High, Speed::Low);
+    let spi = SpiDevice::new(
+        p.SPI1,
+        p.PA5,
+        p.PA7,
+        p.PA6,
+        p.PA4,
+        p.GPDMA1_CH0,
+        p.GPDMA1_CH1,
+        SpiIrqs,
+    )
+    .await;
+    let spi = StaticCell::init(&SPI, Mutex::new(spi));
+    let ltc = StaticCell::init(&LTC, Mutex::new(LTC6811::new(spi, bms).await));
 
-        let err_check = StaticCell::init(
-            &ERR_CHECK,
-            Mutex::new(Output::new(p.PB15, Level::Low, Speed::Low)),
-        );
-
-        let is_balance = StaticCell::init(&IS_BALANCE, Mutex::new(false));
-        let is_tech = StaticCell::init(&IS_TECH, Mutex::new(true));
-
-        let bms = StaticCell::init(&BMS, Mutex::new(SLAVEBMS::new()));
-
-        spawner.spawn(current_sense(current_adc, current_pin, bms).unwrap());
-        spawner.spawn(send_can(bms, can, is_tech).unwrap());
-        spawner.spawn(read_can(is_balance, can_rx, is_tech).unwrap());
-
-        let spi = SpiDevice::new(
-            p.SPI1,
-            p.PA5,
-            p.PA7,
-            p.PA6,
-            p.PA4,
-            p.GPDMA1_CH0,
-            p.GPDMA1_CH1,
-            SpiIrqs,
+    spawner.spawn(
+        ltc_function(
+            bms,
+            ltc,
+            err_check,
+            can,
+            debug_led,
+            voltage_led,
+            temp_led,
+            is_balance,
         )
-        .await;
+        .unwrap(),
+    );
 
-        let spi = StaticCell::init(&SPI, Mutex::new(spi));
-
-        let ltc = LTC6811::new(spi, bms).await;
-        let ltc = StaticCell::init(&LTC, Mutex::new(ltc));
-
-        spawner.spawn(
-            ltc_function(
-                bms,
-                ltc,
-                err_check,
-                can,
-                debug_led,
-                voltage_led,
-                temp_led,
-                is_balance,
-            )
-            .unwrap(),
-        );
-
-        loop {
-            embassy_time::Timer::after_millis(10_000).await;
-        }
-    }
+    core::future::pending().await
 }
 
 #[embassy_executor::task]
@@ -213,11 +161,12 @@ async fn current_sense(
     mut curr_pin: Peri<'static, PA1>,
     bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>,
 ) {
+    let mut vrefint: VrefInt = adc.enable_vrefint();
     embassy_time::Timer::after_secs(2).await;
 
     let mut count: u64 = 0;
     for _ in 0..512 {
-        count = count.wrapping_add(adc.blocking_read(&mut curr_pin, SampleTime::Cycles925) as u64);
+        count = count.wrapping_add(adc1_blocking_read(&mut adc, &mut curr_pin, 1) as u64);
         embassy_time::Timer::after_millis(1).await;
     }
 
@@ -231,13 +180,23 @@ async fn current_sense(
     loop {
         count = 0;
         for _ in 0..50 {
-            count =
-                count.wrapping_add(adc.blocking_read(&mut curr_pin, SampleTime::Cycles925) as u64);
+            count = count.wrapping_add(adc1_blocking_read(&mut adc, &mut curr_pin, 1) as u64);
             embassy_time::Timer::after_micros(200).await;
         }
 
         let average_counts = count as f32 / 50.0;
         CURRENT_AVERAGE_Q8.store(roundf(average_counts * 256.0) as i32, Ordering::Relaxed);
+
+        let _ = &mut vrefint;
+        let _ = adc1_blocking_read(&mut adc, &mut curr_pin, 17);
+        let vrefint_raw = adc1_blocking_read(&mut adc, &mut curr_pin, 17);
+        ADC_VREFINT_RAW.store(vrefint_raw as i32, Ordering::Relaxed);
+        if vrefint_raw != 0 {
+            let vref_mv = (1_216u32 * 4_095) / u32::from(vrefint_raw);
+            let input_mv = ((average_counts * vref_mv as f32) / 4_095.0) as i32;
+            ADC_VREF_MILLIVOLTS.store(vref_mv as i32, Ordering::Relaxed);
+            ADC_INPUT_MILLIVOLTS.store(input_mv, Ordering::Relaxed);
+        }
         let f_curr =
             ((average_counts - no_current_offset_counts) / ACS773_100B_COUNTS_PER_AMP) * 10000.0;
 
@@ -254,6 +213,85 @@ async fn current_sense(
 
         embassy_time::Timer::after_millis(10).await;
     }
+}
+
+fn adc1_blocking_read(
+    _adc: &mut Adc<'static, ADC1>,
+    _pin: &mut Peri<'static, PA1>,
+    channel: u8,
+) -> u16 {
+    let regs = embassy_stm32::pac::ADC1;
+
+    embassy_stm32::pac::GPIOA
+        .moder()
+        .modify(|w| w.set_moder(1, embassy_stm32::pac::gpio::vals::Moder::Analog));
+
+    if regs.cr().read().adstart() {
+        regs.cr().modify(|w| w.set_adstp(true));
+        while regs.cr().read().adstart() {}
+    }
+    if regs.cr().read().aden() {
+        regs.cr().modify(|w| w.set_addis(true));
+        while regs.cr().read().aden() {}
+    }
+
+    regs.difsel().modify(|w| {
+        let differential_channels = w.difsel() & !(1u32 << channel);
+        w.set_difsel(differential_channels);
+    });
+    regs.sqr1().write(|w| {
+        w.set_l(0);
+        w.set_sq(0, channel);
+    });
+    if channel < 10 {
+        regs.smpr1()
+            .modify(|w| w.set_smp(channel as usize, PacSampleTime::Cycles925));
+    } else {
+        regs.smpr2()
+            .modify(|w| w.set_smp((channel - 10) as usize, PacSampleTime::Cycles925));
+    }
+
+    regs.isr().write(|w| w.set_adrdy(true));
+    regs.cr().modify(|w| w.set_aden(true));
+    while !regs.isr().read().adrdy() {}
+
+    regs.isr().write(|w| {
+        w.set_eoc(true);
+        w.set_eos(true);
+        w.set_ovr(true);
+    });
+    regs.cr().modify(|w| w.set_adstart(true));
+    while !regs.isr().read().eoc() {}
+
+    let isr = regs.isr().read().0;
+    let cr = regs.cr().read().0;
+    let cfgr = regs.cfgr().read().0;
+    let dr = regs.dr().read().0;
+    ADC_DR_SNAPSHOT.store(dr, Ordering::Relaxed);
+    ADC_ISR_SNAPSHOT.store(isr, Ordering::Relaxed);
+    ADC_CR_SNAPSHOT.store(cr, Ordering::Relaxed);
+    ADC_CFGR_SNAPSHOT.store(cfgr, Ordering::Relaxed);
+    ADC_SQR1_SNAPSHOT.store(regs.sqr1().read().0, Ordering::Relaxed);
+    ADC_SMPR1_SNAPSHOT.store(regs.smpr1().read().0, Ordering::Relaxed);
+    ADC_SMPR2_SNAPSHOT.store(regs.smpr2().read().0, Ordering::Relaxed);
+    ADC_CCR_SNAPSHOT.store(
+        embassy_stm32::pac::ADC12_COMMON.ccr().read().0,
+        Ordering::Relaxed,
+    );
+    ADC_DIFSEL_SNAPSHOT.store(regs.difsel().read().0, Ordering::Relaxed);
+    ADC_CALFACT_SNAPSHOT.store(regs.calfact().read().0, Ordering::Relaxed);
+    ADC_GPIO_MODER_SNAPSHOT.store(
+        embassy_stm32::pac::GPIOA.moder().read().0,
+        Ordering::Relaxed,
+    );
+    ADC_GPIO_PUPDR_SNAPSHOT.store(
+        embassy_stm32::pac::GPIOA.pupdr().read().0,
+        Ordering::Relaxed,
+    );
+    ADC_RCC_CCIPR5_SNAPSHOT.store(embassy_stm32::pac::RCC.ccipr5().read().0, Ordering::Relaxed);
+    ADC_OR_SNAPSHOT.store(regs.or().read().0, Ordering::Relaxed);
+    ADC_CFGR2_SNAPSHOT.store(regs.cfgr2().read().0, Ordering::Relaxed);
+    dr as u16
 }
 
 #[embassy_executor::task]
@@ -326,6 +364,10 @@ async fn ltc_function(
     mut temp_led: Output<'static>,
     is_balance: &'static Mutex<CriticalSectionRawMutex, bool>,
 ) {
+    while !CURRENT_CALIBRATED.load(Ordering::Acquire) {
+        embassy_time::Timer::after_millis(1).await;
+    }
+
     let _ = {
         let mut ltc_data = ltc.lock().await;
         matches!(
@@ -410,9 +452,10 @@ async fn ltc_function(
                 (measurement_count >> 16) as u8,
                 (measurement_count >> 24) as u8,
             ];
-            let frame = CanFrame::new(CanMsg::DiagnosticId.as_raw(), &diagnostic);
             let mut can_data = can.lock().await;
-            let _ = can_data.write(&frame).await;
+            let _ = can_data
+                .write(&CanFrame::new(CanMsg::DiagnosticId.as_raw(), &diagnostic))
+                .await;
 
             let offset_q8 = CURRENT_OFFSET_Q8.load(Ordering::Relaxed);
             let average_q8 = CURRENT_AVERAGE_Q8.load(Ordering::Relaxed);
@@ -430,8 +473,12 @@ async fn ltc_function(
                 current_ca as u8,
                 (current_ca >> 8) as u8,
             ];
-            let frame = CanFrame::new(CanMsg::CurrentDiagnosticId.as_raw(), &current_diagnostic);
-            let _ = can_data.write(&frame).await;
+            let _ = can_data
+                .write(&CanFrame::new(
+                    CanMsg::CurrentDiagnosticId.as_raw(),
+                    &current_diagnostic,
+                ))
+                .await;
 
             let status = u8::from(ltc_diagnostics.config_valid)
                 | (u8::from(ltc_diagnostics.cell_pec_valid) << 1)
@@ -447,10 +494,83 @@ async fn ltc_function(
                 ltc_diagnostics.cell_pec_errors,
                 ltc_diagnostics.aux_pec_errors,
             ];
-            let frame = CanFrame::new(CanMsg::LtcDiagnosticId.as_raw(), &ltc_diagnostic);
-            let _ = can_data.write(&frame).await;
-            drop(can_data);
+            let _ = can_data
+                .write(&CanFrame::new(
+                    CanMsg::LtcDiagnosticId.as_raw(),
+                    &ltc_diagnostic,
+                ))
+                .await;
 
+            let adc_raw = (average_q8 >> 8).clamp(0, u16::MAX as i32) as u16;
+            let vrefint_raw = ADC_VREFINT_RAW.load(Ordering::Relaxed) as u16;
+            let vref_mv = ADC_VREF_MILLIVOLTS.load(Ordering::Relaxed) as u16;
+            let input_mv = ADC_INPUT_MILLIVOLTS.load(Ordering::Relaxed) as u16;
+            let adc_diagnostic = [
+                adc_raw as u8,
+                (adc_raw >> 8) as u8,
+                vrefint_raw as u8,
+                (vrefint_raw >> 8) as u8,
+                vref_mv as u8,
+                (vref_mv >> 8) as u8,
+                input_mv as u8,
+                (input_mv >> 8) as u8,
+            ];
+            let _ = can_data
+                .write(&CanFrame::new(
+                    CanMsg::AdcDiagnosticId.as_raw(),
+                    &adc_diagnostic,
+                ))
+                .await;
+
+            let register_frames = [
+                (
+                    CanMsg::AdcRegisterDiagnosticId,
+                    (ADC_DR_SNAPSHOT.load(Ordering::Relaxed) & 0xffff)
+                        | ((ADC_ISR_SNAPSHOT.load(Ordering::Relaxed) & 0xffff) << 16),
+                    (ADC_CR_SNAPSHOT.load(Ordering::Relaxed) & 0xffff)
+                        | ((ADC_CFGR_SNAPSHOT.load(Ordering::Relaxed) & 0xffff) << 16),
+                ),
+                (
+                    CanMsg::AdcMuxDiagnosticId,
+                    (ADC_SQR1_SNAPSHOT.load(Ordering::Relaxed) & 0xffff)
+                        | ((ADC_SMPR1_SNAPSHOT.load(Ordering::Relaxed) & 0xffff) << 16),
+                    ADC_CCR_SNAPSHOT.load(Ordering::Relaxed),
+                ),
+                (
+                    CanMsg::AdcCalibrationDiagnosticId,
+                    ADC_DIFSEL_SNAPSHOT.load(Ordering::Relaxed),
+                    ADC_CALFACT_SNAPSHOT.load(Ordering::Relaxed),
+                ),
+                (
+                    CanMsg::AdcGpioDiagnosticId,
+                    ADC_GPIO_MODER_SNAPSHOT.load(Ordering::Relaxed),
+                    ADC_GPIO_PUPDR_SNAPSHOT.load(Ordering::Relaxed),
+                ),
+                (
+                    CanMsg::AdcClockDiagnosticId,
+                    ADC_SMPR2_SNAPSHOT.load(Ordering::Relaxed),
+                    ADC_RCC_CCIPR5_SNAPSHOT.load(Ordering::Relaxed),
+                ),
+                (
+                    CanMsg::AdcOptionDiagnosticId,
+                    ADC_OR_SNAPSHOT.load(Ordering::Relaxed),
+                    ADC_CFGR2_SNAPSHOT.load(Ordering::Relaxed),
+                ),
+            ];
+            for (id, first, second) in register_frames {
+                let payload = [
+                    first as u8,
+                    (first >> 8) as u8,
+                    (first >> 16) as u8,
+                    (first >> 24) as u8,
+                    second as u8,
+                    (second >> 8) as u8,
+                    (second >> 16) as u8,
+                    (second >> 24) as u8,
+                ];
+                let _ = can_data.write(&CanFrame::new(id.as_raw(), &payload)).await;
+            }
+            drop(can_data);
             time_send_log = embassy_time::Instant::now().as_millis();
         }
 

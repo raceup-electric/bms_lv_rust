@@ -256,7 +256,6 @@ impl SLAVEBMS {
     pub fn begin_measurement_cycle(&mut self) {
         self.cell_sample_mask = 0;
         self.temperature_sample_mask = 0;
-        self.cell_data_valid = false;
     }
 
     pub fn has_all_cell_samples(&self) -> bool {
