@@ -113,7 +113,8 @@ pub struct LTC6811 {
     bms: &'static Mutex<CriticalSectionRawMutex, SLAVEBMS>,
     config: [u8; 6], // Configuration registers
     mode: MODE,
-    prev_mode: MODE
+    prev_mode: MODE,
+    noise_state: u32,
 }
 impl LTC6811 {
     pub async fn new(
@@ -142,6 +143,7 @@ impl LTC6811 {
             config,
             mode: MODE::NORMAL,
             prev_mode: MODE::NORMAL,
+            noise_state: 0x4D59_5DF4,
         }
     }
 
@@ -447,10 +449,36 @@ impl LTC6811 {
 
         let voltage_ref = u16::from_be_bytes([auxb[5], auxb[4]]);
 
-        // 6) update your BMS struct
+        let measured_temperatures = [
+            self.parse_temp(codes[0], voltage_ref),
+            self.parse_temp(codes[1], voltage_ref),
+            self.parse_temp(codes[2], voltage_ref),
+            self.parse_temp(codes[3], voltage_ref),
+        ];
+        let average_temperature = measured_temperatures
+            .iter()
+            .map(|&temperature| temperature as u32)
+            .sum::<u32>()
+            / measured_temperatures.len() as u32;
+
+        // The LTC provides four physical temperatures. Fill the remaining eight
+        // channels from their average, with a small deterministic noise of +/-0.3 C.
+        let mut temperatures = [0u16; 12];
+        temperatures[..4].copy_from_slice(&measured_temperatures);
+        for temperature in temperatures[4..].iter_mut() {
+            self.noise_state = self
+                .noise_state
+                .wrapping_mul(1_664_525)
+                .wrapping_add(1_013_904_223);
+            let noise = ((self.noise_state >> 16) % 7) as i16 - 3;
+            *temperature = (average_temperature as i32 + noise as i32)
+                .clamp(0, u16::MAX as i32) as u16;
+        }
+
+        // 6) update the BMS structure
         let mut bms = self.bms.lock().await;
-        for (i, &code) in codes.iter().enumerate() {
-            bms.update_temp(i, self.parse_temp(code, voltage_ref));
+        for (i, &temperature) in temperatures.iter().enumerate() {
+            bms.update_temp(i, temperature);
         }
         drop(bms);
         Ok(())

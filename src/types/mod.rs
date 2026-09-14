@@ -13,7 +13,9 @@ pub enum CanMsg {
     Tech1 = 0x2F8,
     Tech2 = 0x2F9,
     Tech3 = 0x2FA,
-    Tech4 = 0x2FB
+    Tech4 = 0x2FB,
+    Tech5 = 0x2FC,
+    Tech6 = 0x2FD,
 }
 
 impl CanMsg {
@@ -26,7 +28,7 @@ impl CanMsg {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum VOLTAGES {
     MAXVOLTAGE = 42000,
-    MINVOLTAGE = 32000
+    MINVOLTAGE = 32000,
 }
 
 impl VOLTAGES {
@@ -38,8 +40,8 @@ impl VOLTAGES {
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TEMPERATURES {
-    MAXTEMP = 60,
-    MINTEMP = 10
+    MAXTEMP = 600,
+    MINTEMP = 100,
 }
 
 impl TEMPERATURES {

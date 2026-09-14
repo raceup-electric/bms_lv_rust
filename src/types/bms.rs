@@ -1,7 +1,7 @@
 use libm::roundf;
 
 pub static NUM_CELLS: usize = 12;
-pub static NUM_TERMISTORS: usize = 4;
+pub static NUM_TERMISTORS: usize = 12;
 pub static NUM_HISTORY: usize = 5;
 
 #[derive(Default, Debug, Copy, Clone)]
