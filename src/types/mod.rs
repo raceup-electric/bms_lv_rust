@@ -29,7 +29,7 @@ impl CanMsg {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum VOLTAGES {
     MAXVOLTAGE = 42000,
-    MINVOLTAGE = 32000,
+    MINVOLTAGE = 30000,
 }
 
 impl VOLTAGES {

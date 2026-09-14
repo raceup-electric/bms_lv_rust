@@ -337,7 +337,7 @@ async fn ltc_function(
             && bms_data.min_volt() >= VOLTAGES::MINVOLTAGE.as_raw()
             && bms_data.max_volt() <= VOLTAGES::MAXVOLTAGE.as_raw();
         if !voltage_valid {
-            if embassy_time::Instant::now().as_millis() - time_err_volt > 850 {
+            if embassy_time::Instant::now().as_millis() - time_err_volt > 500 {
                 voltage_led.set_high();
                 fault_volt = true;
             }
@@ -351,7 +351,7 @@ async fn ltc_function(
             && bms_data.min_temp() >= TEMPERATURES::MINTEMP._as_raw()
             && bms_data.max_temp() <= TEMPERATURES::MAXTEMP._as_raw();
         if !temperature_valid {
-            if embassy_time::Instant::now().as_millis() - time_err_temp > 450 {
+            if embassy_time::Instant::now().as_millis() - time_err_temp > 500 {
                 temp_led.set_high();
                 fault_temp = true;
             }
